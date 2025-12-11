@@ -1,5 +1,10 @@
 # anchor
 
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![gRPC](https://img.shields.io/badge/gRPC-Transport-green?style=flat&logo=grpc)](https://grpc.io/)
+[![BoltDB](https://img.shields.io/badge/BoltDB-Storage-orange?style=flat)](https://github.com/etcd-io/bbolt)
+
 anchor is a distributed key-value store built on the Raft consensus protocol. It provides leader election, log replication, snapshotting, and dynamic cluster membership. The implementation follows the [Raft paper](https://raft.github.io/raft.pdf) and includes a terminal UI for cluster monitoring.
 
 ## Building
