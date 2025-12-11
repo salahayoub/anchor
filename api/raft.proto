@@ -1,0 +1,113 @@
+syntax = "proto3";
+package raft;
+option go_package = "github.com/salahayoub/skeg/api";
+
+// Log entry types
+enum LogType {
+    LOG_COMMAND = 0;
+    LOG_NOOP = 1;
+    LOG_CONFIGURATION = 2;
+}
+
+message LogEntry {
+    uint64 index = 1;
+    uint64 term = 2;
+    LogType type = 3;
+    bytes data = 4;
+}
+
+// Leader Election
+message VoteRequest {
+    uint64 term = 1;
+    bytes candidate_id = 2;
+    uint64 last_log_index = 3;
+    uint64 last_log_term = 4;
+}
+
+message VoteResponse {
+    uint64 term = 1;
+    bool vote_granted = 2;
+}
+
+// Log Replication
+message AppendEntriesRequest {
+    uint64 term = 1;
+    bytes leader_id = 2;
+    uint64 prev_log_index = 3;
+    uint64 prev_log_term = 4;
+    repeated LogEntry entries = 5;
+    uint64 leader_commit = 6;
+}
+
+message AppendEntriesResponse {
+    uint64 term = 1;
+    bool success = 2;
+    uint64 last_log_index = 3;
+}
+
+// Snapshot Transfer
+message InstallSnapshotRequest {
+    uint64 term = 1;
+    bytes leader_id = 2;
+    uint64 last_included_index = 3;
+    uint64 last_included_term = 4;
+    uint64 offset = 5;
+    bytes data = 6;
+    bool done = 7;
+}
+
+message InstallSnapshotResponse {
+    uint64 term = 1;
+}
+
+// Dynamic Membership - Join Cluster
+message JoinClusterRequest {
+    string node_id = 1;
+    string address = 2;
+}
+
+message JoinClusterResponse {
+    bool success = 1;
+    string leader_hint = 2;
+    string error = 3;
+}
+
+// Dynamic Membership - Remove Server
+message RemoveServerRequest {
+    string node_id = 1;
+}
+
+message RemoveServerResponse {
+    bool success = 1;
+    string leader_hint = 2;
+    string error = 3;
+}
+
+// Cluster Configuration - stored in LOG_CONFIGURATION entries
+message ServerInfo {
+    string id = 1;
+    string address = 2;
+    bool is_voter = 3;
+}
+
+message ClusterConfiguration {
+    repeated ServerInfo servers = 1;
+}
+
+// Raft service defines the RPC methods for Raft consensus protocol communication.
+service Raft {
+    // RequestVote is called by candidates to gather votes during leader election.
+    rpc RequestVote(VoteRequest) returns (VoteResponse);
+    
+    // AppendEntries is called by leaders to replicate log entries and send heartbeats.
+    rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+    
+    // InstallSnapshot is called by leaders to send snapshot chunks to followers.
+    rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+    
+    // JoinCluster is called by new nodes to request membership in the cluster.
+    rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+    
+    // RemoveServer is called to remove a node from the cluster.
+    rpc RemoveServer(RemoveServerRequest) returns (RemoveServerResponse);
+}
