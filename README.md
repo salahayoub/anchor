@@ -45,7 +45,7 @@ curl http://localhost:8001/kv/mykey
 
 ## Architecture
 
-![Architecture](./docs/architecture.png)
+![Architecture](./docs/architecture.drawio.png)
 
 anchor is composed of several packages that work together:
 
