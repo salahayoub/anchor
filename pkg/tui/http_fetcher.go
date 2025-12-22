@@ -1,5 +1,5 @@
-// Package tui provides a terminal user interface for monitoring and interacting
-// with the Skeg distributed key-value store.
+// Package tui provides the terminal interface for monitoring and managing
+// anchor's distributed key-value store cluster.
 package tui
 
 import (
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/salahayoub/anchor/pkg/types"
 )
 
 // HTTPDataFetcher implements DataFetcher by connecting to a Raft node via HTTP.
@@ -73,7 +75,7 @@ func (f *HTTPDataFetcher) FetchClusterState() (*ClusterState, error) {
 	}
 
 	// Parse response
-	var statusResp StatusResponse
+	var statusResp types.StatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
 		f.connected = false
 		return nil, fmt.Errorf("failed to decode status: %w", err)
@@ -104,25 +106,6 @@ func (f *HTTPDataFetcher) FetchClusterState() (*ClusterState, error) {
 	f.lastUpdate = time.Now()
 
 	return state, nil
-}
-
-// StatusResponse represents the JSON response from the /status endpoint.
-type StatusResponse struct {
-	NodeID         string           `json:"node_id"`
-	Role           string           `json:"role"`
-	Term           uint64           `json:"term"`
-	CommitIndex    uint64           `json:"commit_index"`
-	LeaderID       string           `json:"leader_id"`
-	Peers          []PeerStatus     `json:"peers"`
-	ReplicationLag map[string]int64 `json:"replication_lag"`
-}
-
-// PeerStatus represents the status of a peer node.
-type PeerStatus struct {
-	ID         string `json:"id"`
-	Role       string `json:"role"`
-	Connected  bool   `json:"connected"`
-	MatchIndex uint64 `json:"match_index"`
 }
 
 // FetchRecentLogs retrieves the N most recent committed log entries.

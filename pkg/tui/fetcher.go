@@ -1,5 +1,5 @@
-// Package tui provides a terminal user interface for monitoring and interacting
-// with the Skeg distributed key-value store.
+// Package tui provides the terminal interface for monitoring and managing
+// anchor's distributed key-value store cluster.
 package tui
 
 import (
@@ -35,7 +35,8 @@ type LogEntry struct {
 }
 
 // DataFetcher defines the interface for retrieving cluster data.
-// This interface enables testability by allowing mock implementations.
+// Abstracted as an interface to enable testing with mock implementations
+// and to support different data sources (direct Raft access vs HTTP API).
 type DataFetcher interface {
 	// FetchClusterState retrieves current cluster state.
 	FetchClusterState() (*ClusterState, error)

@@ -1,4 +1,4 @@
-// Package main provides the CLI server for the Raft consensus implementation.
+// Package main provides the HTTP server for anchor.
 package main
 
 import (
@@ -11,10 +11,10 @@ import (
 
 	"github.com/salahayoub/anchor/pkg/fsm"
 	"github.com/salahayoub/anchor/pkg/raft"
+	"github.com/salahayoub/anchor/pkg/types"
 )
 
 const (
-	// defaultApplyTimeout is the default timeout for Apply operations.
 	defaultApplyTimeout = 5 * time.Second
 )
 
@@ -22,25 +22,6 @@ const (
 type KVHandler struct {
 	raft *raft.Raft
 	fsm  *fsm.KVStore
-}
-
-// StatusResponse represents the JSON response from the /status endpoint.
-type StatusResponse struct {
-	NodeID         string           `json:"node_id"`
-	Role           string           `json:"role"`
-	Term           uint64           `json:"term"`
-	CommitIndex    uint64           `json:"commit_index"`
-	LeaderID       string           `json:"leader_id"`
-	Peers          []PeerStatus     `json:"peers"`
-	ReplicationLag map[string]int64 `json:"replication_lag"`
-}
-
-// PeerStatus represents the status of a peer node.
-type PeerStatus struct {
-	ID         string `json:"id"`
-	Role       string `json:"role"`
-	Connected  bool   `json:"connected"`
-	MatchIndex uint64 `json:"match_index"`
 }
 
 // NewKVHandler creates a new KVHandler with the given Raft node and KVStore.
@@ -193,7 +174,7 @@ func (h *StatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build response
-	resp := StatusResponse{
+	resp := types.StatusResponse{
 		NodeID:         h.nodeID,
 		Role:           roleStr,
 		Term:           currentTerm,
@@ -204,7 +185,7 @@ func (h *StatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Add peer information from configuration
 	for _, member := range config.Members {
-		peerStatus := PeerStatus{
+		peerStatus := types.PeerStatus{
 			ID:        member.ID,
 			Connected: true, // Assume connected for now
 		}

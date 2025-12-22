@@ -1,5 +1,5 @@
-// Package tui provides a terminal user interface for monitoring and interacting
-// with the Skeg distributed key-value store.
+// Package tui provides the terminal interface for monitoring and managing
+// anchor's distributed key-value store cluster.
 package tui
 
 import (
@@ -40,7 +40,6 @@ type ClusterManager struct {
 //   - basePort: starting gRPC port (each node gets basePort + i - 1)
 //   - baseHTTPPort: starting HTTP port (each node gets baseHTTPPort + i - 1)
 //   - dataDir: base data directory (each node gets dataDir/nodeN)
-//
 func NewClusterManager(nodeCount int, basePort, baseHTTPPort int, dataDir string) *ClusterManager {
 	// Get the absolute path to the current executable
 	// This ensures cluster mode can spawn child processes correctly on Windows

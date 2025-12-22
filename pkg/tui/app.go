@@ -332,16 +332,17 @@ func (a *App) GetModel() *Model {
 
 // handleKeyEvent processes a keyboard event and updates the model.
 // Returns true if the application should exit.
+// Includes debouncing to handle Windows keyboard repeat issues where
+// holding a key generates rapid duplicate events.
 func (a *App) handleKeyEvent(event KeyEvent) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Debounce duplicate key events (Windows keyboard repeat issue)
-	// Block same key for 200ms to prevent keyboard repeat from triggering multiple events
+	// Debounce: ignore same key within 200ms to prevent keyboard repeat
+	// from triggering multiple actions
 	now := time.Now()
 	if now.Sub(a.lastKeyTime) < 200*time.Millisecond &&
 		a.lastKey == event.Key && a.lastRune == event.Rune {
-		// Skip duplicate/repeat event
 		return false
 	}
 	a.lastKeyTime = now

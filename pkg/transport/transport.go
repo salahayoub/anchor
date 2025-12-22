@@ -53,13 +53,12 @@ type Transport interface {
 }
 
 // RPC represents an incoming RPC request with a channel for the response.
-// The Raft core receives RPC instances from the consumer channel, processes
-// the request, and sends the response back via RespChan.
+// This decouples the transport layer from the Raft core: the transport receives
+// requests and puts them on a channel, the Raft core processes them and sends
+// responses back via RespChan. This allows the Raft core to process all events
+// through a single select statement.
 type RPC struct {
-	// Request is the incoming request (VoteRequest, AppendEntriesRequest, or InstallSnapshotRequest)
-	Request interface{}
-
-	// RespChan is used by the Raft core to send the response back
+	Request  interface{}
 	RespChan chan RPCResponse
 }
 

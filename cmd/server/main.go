@@ -1,6 +1,5 @@
 // Package main provides the CLI server for the Raft consensus implementation.
 // It initializes all components and wires them together to create a running Raft node.
-//
 package main
 
 import (
@@ -24,8 +23,10 @@ import (
 
 const (
 	// defaultElectionTimeout is the base election timeout for Raft.
+	// Randomized to [150ms, 300ms] to prevent split votes.
 	defaultElectionTimeout = 150 * time.Millisecond
 	// defaultHeartbeatTimeout is the interval at which the leader sends heartbeats.
+	// Must be much less than election timeout to prevent unnecessary elections.
 	defaultHeartbeatTimeout = 50 * time.Millisecond
 	// raftDBFilename is the name of the BoltDB file for Raft storage.
 	raftDBFilename = "raft.db"
