@@ -101,18 +101,18 @@ func (kv *KVStore) Get(key string) (string, bool) {
 }
 
 // Snapshot returns a reader containing JSON-encoded state.
-// The caller is responsible for closing the returned reader.
-// Creates a consistent point-in-time copy of the state.
+// Creates a point-in-time copy of the state while holding the read lock,
+// then releases the lock before JSON encoding. This minimizes lock contention
+// while ensuring a consistent snapshot.
 func (kv *KVStore) Snapshot() (io.ReadCloser, error) {
 	kv.mu.RLock()
-	// Clone the map while holding the read lock
 	clone := make(map[string]string, len(kv.data))
 	for k, v := range kv.data {
 		clone[k] = v
 	}
 	kv.mu.RUnlock()
 
-	// JSON-encode the cloned map (outside the lock)
+	// JSON-encode outside the lock to avoid blocking readers
 	data, err := json.Marshal(clone)
 	if err != nil {
 		return nil, err
@@ -122,7 +122,8 @@ func (kv *KVStore) Snapshot() (io.ReadCloser, error) {
 }
 
 // Restore replaces current state with data from the reader.
-// On success, the reader is closed. On error, existing state is preserved.
+// On error, existing state is preserved (atomic replacement).
+// The reader is closed on success to signal completion to the caller.
 func (kv *KVStore) Restore(rc io.ReadCloser) error {
 	if rc == nil {
 		return ErrNilReader

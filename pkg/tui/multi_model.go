@@ -1,5 +1,5 @@
-// Package tui provides a terminal user interface for monitoring and interacting
-// with the Skeg distributed key-value store.
+// Package tui provides the terminal interface for monitoring and managing
+// anchor's distributed key-value store cluster.
 package tui
 
 import (

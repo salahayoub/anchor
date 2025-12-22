@@ -14,7 +14,7 @@ type BorderStyle struct {
 }
 
 // NormalBorder is the default border style for unfocused panels.
-// Uses single-line box drawing characters (┌─┐│└┘).
+// Uses single-line box drawing characters for a subtle appearance.
 var NormalBorder = BorderStyle{
 	TopLeft:     "┌",
 	TopRight:    "┐",
@@ -24,8 +24,8 @@ var NormalBorder = BorderStyle{
 	Vertical:    "│",
 }
 
-// FocusedBorder is the border style for focused panels with distinct styling.
-// Uses double-line box drawing characters (╔═╗║╚╝).
+// FocusedBorder is the border style for focused panels.
+// Uses double-line box drawing characters to clearly indicate focus.
 var FocusedBorder = BorderStyle{
 	TopLeft:     "╔",
 	TopRight:    "╗",

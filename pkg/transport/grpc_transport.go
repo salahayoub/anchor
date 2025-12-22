@@ -161,7 +161,8 @@ func (t *GRPCTransport) Connect(peerAddr string) error {
 }
 
 // getOrCreateConn returns an existing connection from the pool or creates a new one.
-// This is used by outbound RPC methods to automatically establish connections.
+// Uses LoadOrStore to handle the race condition where multiple goroutines try to
+// connect to the same peer simultaneously - only one connection is kept.
 func (t *GRPCTransport) getOrCreateConn(peerAddr string) (*grpc.ClientConn, error) {
 	// Check if transport is closed
 	select {

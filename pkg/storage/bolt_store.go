@@ -110,7 +110,8 @@ func (b *BoltStore) Close() error {
 }
 
 // uint64ToBytes encodes a uint64 value to big-endian bytes.
-// Big-endian encoding ensures proper lexicographic ordering of keys.
+// Big-endian ensures lexicographic ordering matches numeric ordering,
+// which is required for BoltDB's cursor iteration to return entries in index order.
 func uint64ToBytes(v uint64) []byte {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, v)
@@ -302,7 +303,8 @@ func (b *BoltStore) Set(key []byte, val []byte) error {
 }
 
 // Get retrieves a value by key from the stable bucket.
-// Returns an empty byte slice if the key does not exist.
+// Returns an empty byte slice (not nil) if the key does not exist,
+// allowing callers to distinguish "key not found" from errors.
 func (b *BoltStore) Get(key []byte) ([]byte, error) {
 	var val []byte
 	err := b.db.View(func(tx *bbolt.Tx) error {
@@ -312,7 +314,8 @@ func (b *BoltStore) Get(key []byte) ([]byte, error) {
 			val = []byte{}
 			return nil
 		}
-		// Make a copy since BoltDB values are only valid within the transaction
+		// Copy the value - BoltDB values are only valid within the transaction
+		// and point directly into the memory-mapped file
 		val = make([]byte, len(v))
 		copy(val, v)
 		return nil
