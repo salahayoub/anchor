@@ -96,6 +96,22 @@ type Config struct {
 	// SnapshotChunkSize controls the size of chunks when streaming snapshots
 	// to followers. Larger chunks reduce RPC overhead but increase memory usage.
 	SnapshotChunkSize int
+
+	// LeaseEnabled enables lease-based reads for better read performance.
+	// When enabled, the leader can serve reads without quorum confirmation
+	// as long as the lease is valid. Requires clock synchronization assumptions.
+	LeaseEnabled bool
+
+	// LeaseDuration is the duration of the leader lease.
+	// Must be less than ElectionTimeout - ClockDriftBound to ensure safety.
+	// If not set (zero), defaults to ElectionTimeout * 0.9.
+	LeaseDuration time.Duration
+
+	// ClockDriftBound is the maximum expected clock drift between nodes.
+	// Used to calculate safe lease duration. A conservative default is used
+	// if not set. Typical values are in the range of 1-10ms for well-synchronized
+	// clocks (e.g., NTP).
+	ClockDriftBound time.Duration
 }
 
 // DefaultSnapshotChunkSize is the default chunk size for InstallSnapshot RPC (1MB).
@@ -182,6 +198,9 @@ type Raft struct {
 	snapshotting      bool // Guards against concurrent automatic snapshots
 
 	pendingSnapshot *pendingSnapshotState // Follower-side snapshot installation
+
+	// Lease state for lease-based reads
+	leaseState *LeaseState
 
 	// Dependencies
 	logStore     LogStore
@@ -272,6 +291,22 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 		}
 	}
 
+	// Validate and set lease configuration if lease-based reads are enabled
+	if config.LeaseEnabled {
+		// Set default lease duration if not specified (90% of election timeout)
+		if config.LeaseDuration == 0 {
+			config.LeaseDuration = time.Duration(float64(config.ElectionTimeout) * 0.9)
+		}
+
+		// Validate lease duration safety: lease_duration < election_timeout - clock_drift_bound
+		// This ensures the lease expires before a new leader can be elected
+		safeDuration := config.ElectionTimeout - config.ClockDriftBound
+		if config.LeaseDuration >= safeDuration {
+			return nil, fmt.Errorf("lease duration (%v) must be less than election timeout (%v) minus clock drift bound (%v) = %v",
+				config.LeaseDuration, config.ElectionTimeout, config.ClockDriftBound, safeDuration)
+		}
+	}
+
 	r := &Raft{
 		currentTerm: currentTerm,
 		votedFor:    votedFor,
@@ -304,6 +339,11 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 		electionTerm:  0,
 
 		running: false,
+	}
+
+	// Initialize lease state if lease-based reads are enabled
+	if config.LeaseEnabled {
+		r.leaseState = NewLeaseState(config.LeaseDuration)
 	}
 
 	// Reconstruct cluster membership from committed LOG_CONFIG entries

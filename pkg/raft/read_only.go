@@ -4,11 +4,14 @@
 // - ConsistencyLevel type and constants for read consistency guarantees
 // - ReadRequest and ReadResponse types for read operations
 // - Read-related error types
+// - LeaseState for lease-based read operations
 package raft
 
 import (
 	"errors"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ConsistencyLevel represents the consistency guarantee for read operations.
@@ -120,3 +123,109 @@ var (
 	// This is a general timeout error for read operations.
 	ErrReadTimeout = errors.New("read operation timed out")
 )
+
+// LeaseState tracks the leader lease for lease-based reads.
+// The lease allows the leader to serve reads without quorum confirmation
+// as long as the lease is valid. The lease is renewed on successful heartbeats.
+//
+// Thread Safety: LeaseState is safe for concurrent use. All methods acquire
+// the mutex for safe access to the lease state.
+type LeaseState struct {
+	mu       sync.RWMutex
+	start    time.Time     // When the lease was last renewed (monotonic)
+	duration time.Duration // How long the lease is valid
+	valid    bool          // Whether the lease has been initialized
+}
+
+// NewLeaseState creates a new LeaseState with the specified duration.
+// The lease starts in an invalid state and must be renewed before use.
+func NewLeaseState(duration time.Duration) *LeaseState {
+	return &LeaseState{
+		duration: duration,
+		valid:    false,
+	}
+}
+
+// IsValid returns true if the lease is currently valid.
+// A lease is valid if it has been renewed and has not expired.
+// Uses monotonic time to avoid issues with wall clock adjustments.
+func (l *LeaseState) IsValid() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if !l.valid {
+		return false
+	}
+
+	// Use time.Since which uses monotonic clock for elapsed time calculation
+	elapsed := time.Since(l.start)
+	return elapsed < l.duration
+}
+
+// Renew updates the lease start time to now, making the lease valid.
+// This should be called when the leader successfully confirms its leadership
+// (e.g., after receiving successful heartbeat responses from a quorum).
+func (l *LeaseState) Renew() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.start = time.Now() // time.Now() includes monotonic clock reading
+	l.valid = true
+}
+
+// Invalidate marks the lease as invalid.
+// This should be called when the node steps down from leadership.
+func (l *LeaseState) Invalidate() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.valid = false
+}
+
+// Remaining returns the remaining duration of the lease.
+// Returns 0 if the lease is invalid or has expired.
+func (l *LeaseState) Remaining() time.Duration {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if !l.valid {
+		return 0
+	}
+
+	elapsed := time.Since(l.start)
+	remaining := l.duration - elapsed
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// Duration returns the configured lease duration.
+func (l *LeaseState) Duration() time.Duration {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.duration
+}
+
+// CalculateSafeLeaseDuration calculates a safe lease duration given the
+// election timeout and clock drift bound. The lease duration must be less
+// than (election_timeout - clock_drift_bound) to ensure safety.
+//
+// This ensures that even with maximum clock drift, the lease will expire
+// before a new leader can be elected, preventing split-brain scenarios.
+func CalculateSafeLeaseDuration(electionTimeout, clockDriftBound time.Duration) time.Duration {
+	safeDuration := electionTimeout - clockDriftBound
+	if safeDuration <= 0 {
+		return 0
+	}
+	return safeDuration
+}
+
+// ValidateLeaseDuration checks if the given lease duration is safe given
+// the election timeout and clock drift bound. Returns true if safe.
+//
+// Safety requirement: lease_duration < election_timeout - clock_drift_bound
+func ValidateLeaseDuration(leaseDuration, electionTimeout, clockDriftBound time.Duration) bool {
+	safeDuration := CalculateSafeLeaseDuration(electionTimeout, clockDriftBound)
+	return leaseDuration > 0 && leaseDuration < safeDuration
+}
