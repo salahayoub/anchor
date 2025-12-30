@@ -262,13 +262,16 @@ func (x *VoteResponse) GetVoteGranted() bool {
 
 // Log Replication
 type AppendEntriesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	LeaderId      []byte                 `protobuf:"bytes,2,opt,name=leader_id,json=leaderId,proto3" json:"leader_id,omitempty"`
-	PrevLogIndex  uint64                 `protobuf:"varint,3,opt,name=prev_log_index,json=prevLogIndex,proto3" json:"prev_log_index,omitempty"`
-	PrevLogTerm   uint64                 `protobuf:"varint,4,opt,name=prev_log_term,json=prevLogTerm,proto3" json:"prev_log_term,omitempty"`
-	Entries       []*LogEntry            `protobuf:"bytes,5,rep,name=entries,proto3" json:"entries,omitempty"`
-	LeaderCommit  uint64                 `protobuf:"varint,6,opt,name=leader_commit,json=leaderCommit,proto3" json:"leader_commit,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Term         uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	LeaderId     []byte                 `protobuf:"bytes,2,opt,name=leader_id,json=leaderId,proto3" json:"leader_id,omitempty"`
+	PrevLogIndex uint64                 `protobuf:"varint,3,opt,name=prev_log_index,json=prevLogIndex,proto3" json:"prev_log_index,omitempty"`
+	PrevLogTerm  uint64                 `protobuf:"varint,4,opt,name=prev_log_term,json=prevLogTerm,proto3" json:"prev_log_term,omitempty"`
+	Entries      []*LogEntry            `protobuf:"bytes,5,rep,name=entries,proto3" json:"entries,omitempty"`
+	LeaderCommit uint64                 `protobuf:"varint,6,opt,name=leader_commit,json=leaderCommit,proto3" json:"leader_commit,omitempty"`
+	// ReadIndex request IDs for linearizable read confirmation
+	// Followers should echo these back in the response to confirm leadership
+	ReadIndexIds  []string `protobuf:"bytes,7,rep,name=read_index_ids,json=readIndexIds,proto3" json:"read_index_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -345,11 +348,21 @@ func (x *AppendEntriesRequest) GetLeaderCommit() uint64 {
 	return 0
 }
 
+func (x *AppendEntriesRequest) GetReadIndexIds() []string {
+	if x != nil {
+		return x.ReadIndexIds
+	}
+	return nil
+}
+
 type AppendEntriesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
-	LastLogIndex  uint64                 `protobuf:"varint,3,opt,name=last_log_index,json=lastLogIndex,proto3" json:"last_log_index,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Term         uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	Success      bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
+	LastLogIndex uint64                 `protobuf:"varint,3,opt,name=last_log_index,json=lastLogIndex,proto3" json:"last_log_index,omitempty"`
+	// ReadIndex request IDs that the follower acknowledges
+	// Echoed from the request to confirm the leader's read requests
+	ReadIndexAcks []string `protobuf:"bytes,4,rep,name=read_index_acks,json=readIndexAcks,proto3" json:"read_index_acks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -403,6 +416,13 @@ func (x *AppendEntriesResponse) GetLastLogIndex() uint64 {
 		return x.LastLogIndex
 	}
 	return 0
+}
+
+func (x *AppendEntriesResponse) GetReadIndexAcks() []string {
+	if x != nil {
+		return x.ReadIndexAcks
+	}
+	return nil
 }
 
 // Snapshot Transfer
@@ -882,18 +902,20 @@ const file_api_raft_proto_rawDesc = "" +
 	"\rlast_log_term\x18\x04 \x01(\x04R\vlastLogTerm\"E\n" +
 	"\fVoteResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12!\n" +
-	"\fvote_granted\x18\x02 \x01(\bR\vvoteGranted\"\xe0\x01\n" +
+	"\fvote_granted\x18\x02 \x01(\bR\vvoteGranted\"\x86\x02\n" +
 	"\x14AppendEntriesRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1b\n" +
 	"\tleader_id\x18\x02 \x01(\fR\bleaderId\x12$\n" +
 	"\x0eprev_log_index\x18\x03 \x01(\x04R\fprevLogIndex\x12\"\n" +
 	"\rprev_log_term\x18\x04 \x01(\x04R\vprevLogTerm\x12(\n" +
 	"\aentries\x18\x05 \x03(\v2\x0e.raft.LogEntryR\aentries\x12#\n" +
-	"\rleader_commit\x18\x06 \x01(\x04R\fleaderCommit\"k\n" +
+	"\rleader_commit\x18\x06 \x01(\x04R\fleaderCommit\x12$\n" +
+	"\x0eread_index_ids\x18\a \x03(\tR\freadIndexIds\"\x93\x01\n" +
 	"\x15AppendEntriesResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12$\n" +
-	"\x0elast_log_index\x18\x03 \x01(\x04R\flastLogIndex\"\xe7\x01\n" +
+	"\x0elast_log_index\x18\x03 \x01(\x04R\flastLogIndex\x12&\n" +
+	"\x0fread_index_acks\x18\x04 \x03(\tR\rreadIndexAcks\"\xe7\x01\n" +
 	"\x16InstallSnapshotRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1b\n" +
 	"\tleader_id\x18\x02 \x01(\fR\bleaderId\x12.\n" +
@@ -935,7 +957,7 @@ const file_api_raft_proto_rawDesc = "" +
 	"\rAppendEntries\x12\x1a.raft.AppendEntriesRequest\x1a\x1b.raft.AppendEntriesResponse\x12N\n" +
 	"\x0fInstallSnapshot\x12\x1c.raft.InstallSnapshotRequest\x1a\x1d.raft.InstallSnapshotResponse\x12B\n" +
 	"\vJoinCluster\x12\x18.raft.JoinClusterRequest\x1a\x19.raft.JoinClusterResponse\x12E\n" +
-	"\fRemoveServer\x12\x19.raft.RemoveServerRequest\x1a\x1a.raft.RemoveServerResponseB Z\x1egithub.com/salahayoub/anchor/apib\x06proto3"
+	"\fRemoveServer\x12\x19.raft.RemoveServerRequest\x1a\x1a.raft.RemoveServerResponseB Z\x1egithub.com/salahayoub/skeg/apib\x06proto3"
 
 var (
 	file_api_raft_proto_rawDescOnce sync.Once

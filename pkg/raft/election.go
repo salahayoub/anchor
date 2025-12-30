@@ -276,6 +276,11 @@ func (r *Raft) stepDownToFollower(newTerm uint64) error {
 		return err
 	}
 
+	// Invalidate lease when stepping down from leadership
+	if r.leaseState != nil {
+		r.leaseState.Invalidate()
+	}
+
 	r.state = Follower
 	return nil
 }

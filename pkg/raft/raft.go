@@ -202,6 +202,9 @@ type Raft struct {
 	// Lease state for lease-based reads
 	leaseState *LeaseState
 
+	// ReadOnly manages pending read-index requests for linearizable reads
+	readOnly *ReadOnly
+
 	// Dependencies
 	logStore     LogStore
 	stableStore  StableStore
@@ -219,6 +222,12 @@ type Raft struct {
 	// Election tracking
 	votesReceived map[string]bool
 	electionTerm  uint64
+
+	// Heartbeat tracking for lease renewal
+	// Tracks which peers have acknowledged the current heartbeat round
+	heartbeatAcks     map[string]bool
+	heartbeatRound    uint64 // Incremented each heartbeat round
+	lastHeartbeatTime time.Time
 
 	// Synchronization
 	mu      sync.RWMutex
@@ -338,6 +347,10 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 		votesReceived: make(map[string]bool),
 		electionTerm:  0,
 
+		heartbeatAcks:     make(map[string]bool),
+		heartbeatRound:    0,
+		lastHeartbeatTime: time.Time{},
+
 		running: false,
 	}
 
@@ -345,6 +358,10 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 	if config.LeaseEnabled {
 		r.leaseState = NewLeaseState(config.LeaseDuration)
 	}
+
+	// Initialize ReadOnly for managing read-index requests
+	// Use election timeout as the read timeout for quorum confirmation
+	r.readOnly = NewReadOnly(config.ElectionTimeout, r.leaseState)
 
 	// Reconstruct cluster membership from committed LOG_CONFIG entries
 	if err := r.reconstructConfigFromLog(); err != nil {
@@ -500,6 +517,20 @@ func (r *Raft) LastApplied() uint64 {
 	return r.lastApplied
 }
 
+// GetReadOnly returns the ReadOnly instance for read operations.
+func (r *Raft) GetReadOnly() *ReadOnly {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.readOnly
+}
+
+// GetLeaseState returns the LeaseState for lease-based reads.
+func (r *Raft) GetLeaseState() *LeaseState {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.leaseState
+}
+
 // ApplyEntries is a public method to trigger entry application.
 func (r *Raft) ApplyEntries() {
 	r.mu.Lock()
@@ -583,6 +614,11 @@ func (r *Raft) Stop() error {
 	close(r.stopChan)
 	<-r.doneChan
 
+	// Stop the ReadOnly cleanup goroutine
+	if r.readOnly != nil {
+		r.readOnly.Stop()
+	}
+
 	return nil
 }
 
@@ -607,10 +643,18 @@ func (r *Raft) run() {
 			r.mu.Unlock()
 
 		case <-r.heartbeatTicker.C:
-			r.mu.RLock()
+			r.mu.Lock()
 			isLeader := r.state == Leader
 			peers := r.config.Peers
-			r.mu.RUnlock()
+			if isLeader {
+				// Start a new heartbeat round
+				r.heartbeatRound++
+				r.heartbeatAcks = make(map[string]bool)
+				// Leader counts itself as an ack
+				r.heartbeatAcks[r.config.ID] = true
+				r.lastHeartbeatTime = time.Now()
+			}
+			r.mu.Unlock()
 
 			if isLeader {
 				for _, peer := range peers {

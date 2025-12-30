@@ -386,6 +386,23 @@ func (ro *ReadOnly) PendingReadCount() int {
 	return len(ro.pendingReads)
 }
 
+// GetPendingReadIDs returns a slice of all pending read request IDs.
+// This is used to include read IDs in AppendEntries requests for confirmation.
+func (ro *ReadOnly) GetPendingReadIDs() []string {
+	ro.mu.RLock()
+	defer ro.mu.RUnlock()
+
+	if len(ro.pendingReads) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(ro.pendingReads))
+	for id := range ro.pendingReads {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // cleanupLoop runs in the background and cleans up timed-out read requests.
 func (ro *ReadOnly) cleanupLoop() {
 	defer close(ro.doneChan)

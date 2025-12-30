@@ -86,6 +86,11 @@ func (r *Raft) sendAppendEntries(peer string) {
 		LeaderCommit: r.commitIndex,
 	}
 
+	// Include pending read index IDs for linearizable read confirmation
+	if r.readOnly != nil {
+		req.ReadIndexIds = r.readOnly.GetPendingReadIDs()
+	}
+
 	r.mu.RUnlock()
 
 	// Send the request asynchronously
@@ -251,6 +256,12 @@ func (r *Raft) handleAppendEntries(req *api.AppendEntriesRequest) *api.AppendEnt
 	lastIndex, _ := r.logStore.LastIndex()
 	resp.LastLogIndex = lastIndex
 	resp.Success = true
+
+	// Echo back read index IDs to confirm leadership for linearizable reads
+	if len(req.ReadIndexIds) > 0 {
+		resp.ReadIndexAcks = req.ReadIndexIds
+	}
+
 	return resp
 }
 
@@ -258,6 +269,7 @@ func (r *Raft) handleAppendEntries(req *api.AppendEntriesRequest) *api.AppendEnt
 // On success, it updates matchIndex and nextIndex for the peer.
 // On failure due to log inconsistency, it decrements nextIndex and schedules retry.
 // After updating matchIndex, checks if peer is NonVoter and eligible for promotion.
+// Also tracks heartbeat acknowledgments for lease renewal.
 func (r *Raft) handleAppendEntriesResponse(peer string, req *api.AppendEntriesRequest, resp *api.AppendEntriesResponse) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -290,6 +302,20 @@ func (r *Raft) handleAppendEntriesResponse(peer string, req *api.AppendEntriesRe
 		}
 		// nextIndex = matchIndex + 1
 		r.nextIndex[peer] = r.matchIndex[peer] + 1
+
+		// Track heartbeat acknowledgment for lease renewal
+		r.heartbeatAcks[peer] = true
+
+		// Process read index acknowledgments for linearizable reads
+		if r.readOnly != nil && len(resp.ReadIndexAcks) > 0 {
+			voters := r.getVotersUnlocked()
+			for _, readID := range resp.ReadIndexAcks {
+				r.readOnly.AckRead(readID, peer, voters)
+			}
+		}
+
+		// Check if we have quorum for lease renewal
+		r.checkAndRenewLease()
 
 		// Try to advance commit index after successful replication
 		r.advanceCommitIndex()
@@ -392,6 +418,37 @@ func (r *Raft) advanceCommitIndex() {
 
 	// Apply newly committed entries
 	r.applyEntries()
+}
+
+// checkAndRenewLease checks if a quorum of voters have acknowledged heartbeats
+// and renews the leader lease if so. This enables lease-based reads.
+// This method assumes the caller holds the mutex.
+func (r *Raft) checkAndRenewLease() {
+	// Only renew lease if lease-based reads are enabled
+	if r.leaseState == nil {
+		return
+	}
+
+	// Get list of voters
+	voters := r.getVotersUnlocked()
+	if len(voters) == 0 {
+		return
+	}
+
+	// Count heartbeat acks from voters
+	ackCount := 0
+	for _, voterID := range voters {
+		if r.heartbeatAcks[voterID] {
+			ackCount++
+		}
+	}
+
+	// Check if we have quorum
+	quorum := calculateQuorum(voters)
+	if ackCount >= quorum {
+		// Renew the lease
+		r.leaseState.Renew()
+	}
 }
 
 // checkAndPromoteNonVoter checks if a peer is a NonVoter that has caught up
