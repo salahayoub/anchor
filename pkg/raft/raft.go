@@ -1019,3 +1019,265 @@ func (r *Raft) CompactLog() error {
 	defer r.mu.Unlock()
 	return r.compactLog()
 }
+
+// ReadStale performs a stale read directly from the state machine without
+// any coordination. This provides the fastest read path but may return
+// stale data if the node is behind the leader.
+//
+// The state machine must implement ReadableStateMachine interface.
+//
+// Returns:
+// - StaleReadResult containing the value, found status, applied index, and term
+// - error if the state machine doesn't support reads or other errors occur
+//
+
+func (r *Raft) ReadStale(key string) (*StaleReadResult, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Check if state machine supports reads
+	readable, ok := r.stateMachine.(ReadableStateMachine)
+	if !ok {
+		return nil, errors.New("state machine does not support reads")
+	}
+
+	// Read directly from state machine without coordination
+	value, found := readable.Get(key)
+
+	return &StaleReadResult{
+		Value:        value,
+		Found:        found,
+		AppliedIndex: r.lastApplied,
+		Term:         r.currentTerm,
+	}, nil
+}
+
+// ReadLinearizable performs a linearizable read that guarantees seeing the
+// most recent committed write. This is achieved by:
+// 1. Recording the current commit index as the read index
+// 2. Confirming leadership via quorum heartbeat
+// 3. Waiting for the applied index to reach the read index
+// 4. Reading from the state machine
+//
+// This method can only be called on the leader. Non-leaders will return ErrNotLeader.
+//
+// The state machine must implement ReadableStateMachine interface.
+//
+
+func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadResponse, error) {
+	r.mu.Lock()
+
+	// Only leaders can serve linearizable reads
+	if r.state != Leader {
+		leaderID := r.leaderID
+		r.mu.Unlock()
+		return nil, &NotLeaderError{LeaderHint: leaderID}
+	}
+
+	// Check if running
+	if !r.running {
+		r.mu.Unlock()
+		return nil, ErrStopped
+	}
+
+	// Check if state machine supports reads
+	readable, ok := r.stateMachine.(ReadableStateMachine)
+	if !ok {
+		r.mu.Unlock()
+		return nil, errors.New("state machine does not support reads")
+	}
+
+	// Record the current commit index as the read index
+	readIndex := r.commitIndex
+	currentTerm := r.currentTerm
+
+	// Generate a unique request ID for this read
+	requestID := fmt.Sprintf("read-%d-%d", time.Now().UnixNano(), readIndex)
+
+	// Add to pending reads - this will be confirmed via heartbeat responses
+	respChan := r.readOnly.AddPendingRead(requestID, readIndex)
+
+	// Leader counts itself as an ack
+	voters := r.getVotersUnlocked()
+	r.readOnly.AckRead(requestID, r.config.ID, voters)
+
+	// Check if we already have quorum (single-node cluster case)
+	pendingRead := r.readOnly.GetPendingRead(requestID)
+	if pendingRead == nil {
+		// Already completed (had quorum from self-ack in single-node cluster)
+		// Wait for applied index to reach read index
+		for r.lastApplied < readIndex {
+			r.mu.Unlock()
+			time.Sleep(time.Millisecond)
+			r.mu.Lock()
+			if r.state != Leader {
+				r.mu.Unlock()
+				return nil, ErrNotLeader
+			}
+		}
+
+		// Read from state machine
+		value, found := readable.Get(key)
+		appliedIndex := r.lastApplied
+		r.mu.Unlock()
+
+		return &ReadResponse{
+			Value:        []byte(value),
+			Found:        found,
+			AppliedIndex: appliedIndex,
+			Term:         currentTerm,
+			Consistency:  Linearizable,
+		}, nil
+	}
+
+	r.mu.Unlock()
+
+	// Wait for quorum confirmation or timeout
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-respChan:
+		if err != nil {
+			return nil, err
+		}
+	case <-timer.C:
+		r.readOnly.RemovePendingRead(requestID)
+		return nil, ErrQuorumTimeout
+	}
+
+	// Quorum confirmed - now wait for applied index to reach read index
+	r.mu.Lock()
+	for r.lastApplied < readIndex {
+		r.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		r.mu.Lock()
+		if r.state != Leader {
+			r.mu.Unlock()
+			return nil, ErrNotLeader
+		}
+	}
+
+	// Read from state machine
+	value, found := readable.Get(key)
+	appliedIndex := r.lastApplied
+	r.mu.Unlock()
+
+	return &ReadResponse{
+		Value:        []byte(value),
+		Found:        found,
+		AppliedIndex: appliedIndex,
+		Term:         currentTerm,
+		Consistency:  Linearizable,
+	}, nil
+}
+
+// ReadLease performs a lease-based read that provides strong consistency
+// with better performance than linearizable reads when the lease is valid.
+//
+// If the leader lease is valid, the read is served directly from the state
+// machine without quorum confirmation. If the lease has expired, the method
+// falls back to ReadLinearizable for safety.
+//
+// This method can only be called on the leader. Non-leaders will return ErrNotLeader.
+// Lease-based reads must be enabled in the configuration.
+//
+// The state machine must implement ReadableStateMachine interface.
+
+func (r *Raft) ReadLease(key string, timeout time.Duration) (*ReadResponse, error) {
+	r.mu.RLock()
+
+	// Only leaders can serve lease-based reads
+	if r.state != Leader {
+		leaderID := r.leaderID
+		r.mu.RUnlock()
+		return nil, &NotLeaderError{LeaderHint: leaderID}
+	}
+
+	// Check if lease-based reads are enabled
+	if r.leaseState == nil {
+		r.mu.RUnlock()
+		return nil, errors.New("lease-based reads are not enabled")
+	}
+
+	// Check if state machine supports reads
+	readable, ok := r.stateMachine.(ReadableStateMachine)
+	if !ok {
+		r.mu.RUnlock()
+		return nil, errors.New("state machine does not support reads")
+	}
+
+	// Check if lease is valid
+	if r.leaseState.IsValid() {
+		// Lease is valid - read directly from state machine
+		value, found := readable.Get(key)
+		appliedIndex := r.lastApplied
+		currentTerm := r.currentTerm
+		r.mu.RUnlock()
+
+		return &ReadResponse{
+			Value:        []byte(value),
+			Found:        found,
+			AppliedIndex: appliedIndex,
+			Term:         currentTerm,
+			Consistency:  LeaseRead,
+		}, nil
+	}
+
+	r.mu.RUnlock()
+
+	// Lease expired - fall back to linearizable read
+	return r.ReadLinearizable(key, timeout)
+}
+
+// Read performs a read operation with the specified consistency level.
+// This is the main entry point for read operations that routes to the
+// appropriate read method based on the consistency level.
+//
+// Consistency levels:
+// - Linearizable (default): Strongest consistency, requires quorum confirmation
+// - LeaseRead: Strong consistency with better performance when lease is valid
+// - Stale: Fastest, may return stale data
+//
+// For Linearizable and LeaseRead consistency levels, this method can only be
+// called on the leader. Non-leaders will return ErrNotLeader with a hint
+// about the current leader for client redirection.
+//
+// For Stale consistency, the read can be served by any node.
+//
+// The state machine must implement ReadableStateMachine interface.
+//
+
+func (r *Raft) Read(req *ReadRequest, timeout time.Duration) (*ReadResponse, error) {
+	// Default to Linearizable if not specified
+	consistency := req.Consistency
+	if consistency != Linearizable && consistency != LeaseRead && consistency != Stale {
+		consistency = Linearizable
+	}
+
+	switch consistency {
+	case Stale:
+		// Stale reads can be served by any node
+		result, err := r.ReadStale(req.Key)
+		if err != nil {
+			return &ReadResponse{Error: err}, err
+		}
+		return &ReadResponse{
+			Value:        []byte(result.Value),
+			Found:        result.Found,
+			AppliedIndex: result.AppliedIndex,
+			Term:         result.Term,
+			Consistency:  Stale,
+		}, nil
+
+	case LeaseRead:
+		// Lease-based reads require leadership
+		return r.ReadLease(req.Key, timeout)
+
+	case Linearizable:
+		fallthrough
+	default:
+		// Linearizable reads require leadership
+		return r.ReadLinearizable(req.Key, timeout)
+	}
+}

@@ -450,3 +450,25 @@ func (ro *ReadOnly) Stop() {
 func (ro *ReadOnly) GetLease() *LeaseState {
 	return ro.lease
 }
+
+// ReadableStateMachine extends StateMachine with read capabilities.
+// This interface allows reading values from the state machine without
+// going through the Apply method.
+type ReadableStateMachine interface {
+	StateMachine
+	// Get retrieves a value by key from the state machine.
+	// Returns the value and true if found, empty and false otherwise.
+	Get(key string) (string, bool)
+}
+
+// StaleReadResult contains the result of a stale read operation.
+type StaleReadResult struct {
+	// Value is the value read from the state machine.
+	Value string
+	// Found indicates whether the key was found.
+	Found bool
+	// AppliedIndex is the log index at which the read was performed.
+	AppliedIndex uint64
+	// Term is the current term at the time of the read.
+	Term uint64
+}
