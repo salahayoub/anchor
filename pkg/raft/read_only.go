@@ -229,3 +229,207 @@ func ValidateLeaseDuration(leaseDuration, electionTimeout, clockDriftBound time.
 	safeDuration := CalculateSafeLeaseDuration(electionTimeout, clockDriftBound)
 	return leaseDuration > 0 && leaseDuration < safeDuration
 }
+
+// readIndexState tracks the state of a pending read-index request.
+// Each linearizable read requires confirmation from a quorum of nodes
+// to ensure the leader is still the valid leader.
+type readIndexState struct {
+	// requestID is a unique identifier for this read request
+	requestID string
+
+	// readIndex is the commit index at the time the read was initiated
+	readIndex uint64
+
+	// acks tracks which peers have acknowledged this read request
+	// Key is the peer ID, value is true if acknowledged
+	acks map[string]bool
+
+	// respChan is used to signal when the read can proceed or has failed
+	respChan chan error
+
+	// createdAt is when this read request was created (for timeout tracking)
+	createdAt time.Time
+}
+
+// newReadIndexState creates a new readIndexState with the given parameters.
+func newReadIndexState(requestID string, readIndex uint64) *readIndexState {
+	return &readIndexState{
+		requestID: requestID,
+		readIndex: readIndex,
+		acks:      make(map[string]bool),
+		respChan:  make(chan error, 1),
+		createdAt: time.Now(),
+	}
+}
+
+// AddAck records an acknowledgment from a peer for this read request.
+func (r *readIndexState) AddAck(peerID string) {
+	r.acks[peerID] = true
+}
+
+// HasQuorum returns true if a majority of voters have acknowledged this read.
+// The voters slice should include all voting members of the cluster.
+func (r *readIndexState) HasQuorum(voters []string) bool {
+	if len(voters) == 0 {
+		return false
+	}
+
+	quorum := (len(voters) / 2) + 1
+	ackCount := 0
+
+	for _, voter := range voters {
+		if r.acks[voter] {
+			ackCount++
+		}
+	}
+
+	return ackCount >= quorum
+}
+
+// ReadOnly manages pending read-index requests for linearizable reads.
+// It tracks pending reads and handles quorum confirmation and timeouts.
+//
+// Thread Safety: ReadOnly is safe for concurrent use. All methods acquire
+// the mutex for safe access to the pending reads map.
+type ReadOnly struct {
+	mu sync.RWMutex
+
+	// pendingReads maps request IDs to their read index state
+	pendingReads map[string]*readIndexState
+
+	// lease tracks the leader lease for lease-based reads
+	lease *LeaseState
+
+	// readTimeout is the maximum time to wait for quorum confirmation
+	readTimeout time.Duration
+
+	// stopChan signals the cleanup goroutine to stop
+	stopChan chan struct{}
+
+	// doneChan signals that the cleanup goroutine has stopped
+	doneChan chan struct{}
+}
+
+// NewReadOnly creates a new ReadOnly instance with the specified timeout.
+// If lease is provided, it will be used for lease-based reads.
+func NewReadOnly(readTimeout time.Duration, lease *LeaseState) *ReadOnly {
+	ro := &ReadOnly{
+		pendingReads: make(map[string]*readIndexState),
+		lease:        lease,
+		readTimeout:  readTimeout,
+		stopChan:     make(chan struct{}),
+		doneChan:     make(chan struct{}),
+	}
+
+	// Start background cleanup goroutine
+	go ro.cleanupLoop()
+
+	return ro
+}
+
+// AddPendingRead creates a new pending read request and returns the response channel.
+// The caller should wait on the returned channel for the read to be confirmed or timeout.
+func (ro *ReadOnly) AddPendingRead(requestID string, readIndex uint64) <-chan error {
+	ro.mu.Lock()
+	defer ro.mu.Unlock()
+
+	state := newReadIndexState(requestID, readIndex)
+	ro.pendingReads[requestID] = state
+
+	return state.respChan
+}
+
+// AckRead records an acknowledgment from a peer for a pending read request.
+// If the read achieves quorum after this ack, it signals success on the response channel.
+func (ro *ReadOnly) AckRead(requestID string, peerID string, voters []string) {
+	ro.mu.Lock()
+	defer ro.mu.Unlock()
+
+	state, exists := ro.pendingReads[requestID]
+	if !exists {
+		return
+	}
+
+	state.AddAck(peerID)
+
+	// Check if we now have quorum
+	if state.HasQuorum(voters) {
+		// Signal success and remove from pending
+		select {
+		case state.respChan <- nil:
+		default:
+			// Channel already has a value, skip
+		}
+		delete(ro.pendingReads, requestID)
+	}
+}
+
+// GetPendingRead returns the read index state for a pending read request.
+// Returns nil if the request doesn't exist.
+func (ro *ReadOnly) GetPendingRead(requestID string) *readIndexState {
+	ro.mu.RLock()
+	defer ro.mu.RUnlock()
+	return ro.pendingReads[requestID]
+}
+
+// RemovePendingRead removes a pending read request.
+func (ro *ReadOnly) RemovePendingRead(requestID string) {
+	ro.mu.Lock()
+	defer ro.mu.Unlock()
+	delete(ro.pendingReads, requestID)
+}
+
+// PendingReadCount returns the number of pending read requests.
+func (ro *ReadOnly) PendingReadCount() int {
+	ro.mu.RLock()
+	defer ro.mu.RUnlock()
+	return len(ro.pendingReads)
+}
+
+// cleanupLoop runs in the background and cleans up timed-out read requests.
+func (ro *ReadOnly) cleanupLoop() {
+	defer close(ro.doneChan)
+
+	ticker := time.NewTicker(ro.readTimeout / 2)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ro.stopChan:
+			return
+		case <-ticker.C:
+			ro.cleanupTimedOutReads()
+		}
+	}
+}
+
+// cleanupTimedOutReads removes read requests that have exceeded the timeout
+// and sends ErrQuorumTimeout to their response channels.
+func (ro *ReadOnly) cleanupTimedOutReads() {
+	ro.mu.Lock()
+	defer ro.mu.Unlock()
+
+	now := time.Now()
+	for requestID, state := range ro.pendingReads {
+		if now.Sub(state.createdAt) > ro.readTimeout {
+			// Send timeout error
+			select {
+			case state.respChan <- ErrQuorumTimeout:
+			default:
+				// Channel already has a value, skip
+			}
+			delete(ro.pendingReads, requestID)
+		}
+	}
+}
+
+// Stop stops the background cleanup goroutine.
+func (ro *ReadOnly) Stop() {
+	close(ro.stopChan)
+	<-ro.doneChan
+}
+
+// GetLease returns the lease state for lease-based reads.
+func (ro *ReadOnly) GetLease() *LeaseState {
+	return ro.lease
+}
