@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -16,6 +17,12 @@ import (
 
 const (
 	defaultApplyTimeout = 5 * time.Second
+	defaultReadTimeout  = 5 * time.Second
+
+	// HTTP header for specifying read consistency level
+	headerConsistency = "X-Consistency"
+	// HTTP header for returning the applied index
+	headerAppliedIndex = "X-Applied-Index"
 )
 
 // KVHandler handles HTTP key-value operations.
@@ -104,8 +111,12 @@ func (h *KVHandler) HandlePut(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleGet processes GET /kv/{key} requests.
-// It returns the current value from the local state machine.
+// It reads the value using the Raft Read method with the specified consistency level.
+// The consistency level is specified via the X-Consistency header (default: linearizable).
 // Returns 404 for non-existent keys.
+// Returns 400 for invalid consistency level.
+// Returns 503 for not leader / quorum timeout.
+// Returns 504 for read timeout.
 func (h *KVHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	// Extract key from URL path
 	key := extractKey(r.URL.Path)
@@ -114,17 +125,38 @@ func (h *KVHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get value from KVStore
-	value, ok := h.fsm.Get(key)
-	if !ok {
+	// Parse consistency level from header
+	consistency, err := parseConsistencyHeader(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Create read request
+	readReq := &raft.ReadRequest{
+		Key:         key,
+		Consistency: consistency,
+	}
+
+	// Perform read operation
+	resp, err := h.raft.Read(readReq, defaultReadTimeout)
+	if err != nil {
+		handleReadError(w, h.raft, err)
+		return
+	}
+
+	// Check if key was found
+	if !resp.Found {
 		http.Error(w, "Key not found", http.StatusNotFound)
 		return
 	}
 
-	// Return value
+	// Set response headers
 	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set(headerConsistency, resp.Consistency.String())
+	w.Header().Set(headerAppliedIndex, fmt.Sprintf("%d", resp.AppliedIndex))
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(value))
+	w.Write(resp.Value)
 }
 
 // extractKey extracts the key from a URL path like /kv/{key}.
@@ -133,6 +165,74 @@ func extractKey(path string) string {
 	path = strings.TrimPrefix(path, "/")
 	path = strings.TrimPrefix(path, "kv/")
 	return path
+}
+
+// parseConsistencyHeader parses the X-Consistency header value.
+// Returns Linearizable if the header is absent or empty.
+// Returns an error for invalid values.
+func parseConsistencyHeader(r *http.Request) (raft.ConsistencyLevel, error) {
+	headerValue := r.Header.Get(headerConsistency)
+	if headerValue == "" {
+		// Default to Linearizable if header is absent
+		return raft.Linearizable, nil
+	}
+
+	consistency, err := raft.ParseConsistencyLevel(headerValue)
+	if err != nil {
+		return 0, fmt.Errorf("invalid consistency level: %s", headerValue)
+	}
+	return consistency, nil
+}
+
+// handleReadError handles read operation errors and returns appropriate HTTP status codes.
+// - 503 Service Unavailable: not leader, quorum timeout
+// - 504 Gateway Timeout: read timeout
+// Includes X-Raft-Leader header with leader hint when available.
+func handleReadError(w http.ResponseWriter, r *raft.Raft, err error) {
+	// Check for NotLeaderError to get leader hint
+	var notLeaderErr *raft.NotLeaderError
+	if errors.As(err, &notLeaderErr) {
+		if notLeaderErr.LeaderHint != "" {
+			w.Header().Set("X-Raft-Leader", notLeaderErr.LeaderHint)
+		}
+		http.Error(w, "Not the leader", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check for ErrNotLeader sentinel error
+	if errors.Is(err, raft.ErrNotLeader) {
+		leaderID := r.Leader()
+		if leaderID != "" {
+			w.Header().Set("X-Raft-Leader", leaderID)
+		}
+		http.Error(w, "Not the leader", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check for quorum timeout
+	if errors.Is(err, raft.ErrQuorumTimeout) {
+		leaderID := r.Leader()
+		if leaderID != "" {
+			w.Header().Set("X-Raft-Leader", leaderID)
+		}
+		http.Error(w, "Quorum confirmation timed out", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check for read timeout
+	if errors.Is(err, raft.ErrReadTimeout) {
+		http.Error(w, "Read operation timed out", http.StatusGatewayTimeout)
+		return
+	}
+
+	// Check for general timeout
+	if errors.Is(err, raft.ErrTimeout) {
+		http.Error(w, "Request timed out", http.StatusGatewayTimeout)
+		return
+	}
+
+	// Default to internal server error for other errors
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 // StatusHandler handles HTTP status requests.
