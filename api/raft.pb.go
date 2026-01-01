@@ -780,6 +780,160 @@ func (x *RemoveServerResponse) GetError() string {
 	return ""
 }
 
+// Read Request for forwarding reads from followers to leader
+type ReadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Consistency level: 0 = Linearizable, 1 = LeaseRead, 2 = Stale
+	Consistency   int32  `protobuf:"varint,2,opt,name=consistency,proto3" json:"consistency,omitempty"`
+	RequestId     string `protobuf:"bytes,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadRequest) Reset() {
+	*x = ReadRequest{}
+	mi := &file_api_raft_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadRequest) ProtoMessage() {}
+
+func (x *ReadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_raft_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadRequest.ProtoReflect.Descriptor instead.
+func (*ReadRequest) Descriptor() ([]byte, []int) {
+	return file_api_raft_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReadRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ReadRequest) GetConsistency() int32 {
+	if x != nil {
+		return x.Consistency
+	}
+	return 0
+}
+
+func (x *ReadRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+type ReadResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	Found         bool                   `protobuf:"varint,2,opt,name=found,proto3" json:"found,omitempty"`
+	AppliedIndex  uint64                 `protobuf:"varint,3,opt,name=applied_index,json=appliedIndex,proto3" json:"applied_index,omitempty"`
+	Term          uint64                 `protobuf:"varint,4,opt,name=term,proto3" json:"term,omitempty"`
+	Consistency   int32                  `protobuf:"varint,5,opt,name=consistency,proto3" json:"consistency,omitempty"`
+	Error         string                 `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	LeaderHint    string                 `protobuf:"bytes,7,opt,name=leader_hint,json=leaderHint,proto3" json:"leader_hint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadResponse) Reset() {
+	*x = ReadResponse{}
+	mi := &file_api_raft_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadResponse) ProtoMessage() {}
+
+func (x *ReadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_raft_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadResponse.ProtoReflect.Descriptor instead.
+func (*ReadResponse) Descriptor() ([]byte, []int) {
+	return file_api_raft_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReadResponse) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *ReadResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *ReadResponse) GetAppliedIndex() uint64 {
+	if x != nil {
+		return x.AppliedIndex
+	}
+	return 0
+}
+
+func (x *ReadResponse) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *ReadResponse) GetConsistency() int32 {
+	if x != nil {
+		return x.Consistency
+	}
+	return 0
+}
+
+func (x *ReadResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *ReadResponse) GetLeaderHint() string {
+	if x != nil {
+		return x.LeaderHint
+	}
+	return ""
+}
+
 // Cluster Configuration - stored in LOG_CONFIGURATION entries
 type ServerInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -792,7 +946,7 @@ type ServerInfo struct {
 
 func (x *ServerInfo) Reset() {
 	*x = ServerInfo{}
-	mi := &file_api_raft_proto_msgTypes[11]
+	mi := &file_api_raft_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -804,7 +958,7 @@ func (x *ServerInfo) String() string {
 func (*ServerInfo) ProtoMessage() {}
 
 func (x *ServerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_raft_proto_msgTypes[11]
+	mi := &file_api_raft_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -817,7 +971,7 @@ func (x *ServerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerInfo.ProtoReflect.Descriptor instead.
 func (*ServerInfo) Descriptor() ([]byte, []int) {
-	return file_api_raft_proto_rawDescGZIP(), []int{11}
+	return file_api_raft_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ServerInfo) GetId() string {
@@ -850,7 +1004,7 @@ type ClusterConfiguration struct {
 
 func (x *ClusterConfiguration) Reset() {
 	*x = ClusterConfiguration{}
-	mi := &file_api_raft_proto_msgTypes[12]
+	mi := &file_api_raft_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -862,7 +1016,7 @@ func (x *ClusterConfiguration) String() string {
 func (*ClusterConfiguration) ProtoMessage() {}
 
 func (x *ClusterConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_api_raft_proto_msgTypes[12]
+	mi := &file_api_raft_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -875,7 +1029,7 @@ func (x *ClusterConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterConfiguration.ProtoReflect.Descriptor instead.
 func (*ClusterConfiguration) Descriptor() ([]byte, []int) {
-	return file_api_raft_proto_rawDescGZIP(), []int{12}
+	return file_api_raft_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ClusterConfiguration) GetServers() []*ServerInfo {
@@ -940,7 +1094,21 @@ const file_api_raft_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1f\n" +
 	"\vleader_hint\x18\x02 \x01(\tR\n" +
 	"leaderHint\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"Q\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"`\n" +
+	"\vReadRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12 \n" +
+	"\vconsistency\x18\x02 \x01(\x05R\vconsistency\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x03 \x01(\tR\trequestId\"\xcc\x01\n" +
+	"\fReadResponse\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\x12\x14\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found\x12#\n" +
+	"\rapplied_index\x18\x03 \x01(\x04R\fappliedIndex\x12\x12\n" +
+	"\x04term\x18\x04 \x01(\x04R\x04term\x12 \n" +
+	"\vconsistency\x18\x05 \x01(\x05R\vconsistency\x12\x14\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x12\x1f\n" +
+	"\vleader_hint\x18\a \x01(\tR\n" +
+	"leaderHint\"Q\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
@@ -951,13 +1119,14 @@ const file_api_raft_proto_rawDesc = "" +
 	"\aLogType\x12\x0f\n" +
 	"\vLOG_COMMAND\x10\x00\x12\f\n" +
 	"\bLOG_NOOP\x10\x01\x12\x15\n" +
-	"\x11LOG_CONFIGURATION\x10\x022\xe1\x02\n" +
+	"\x11LOG_CONFIGURATION\x10\x022\x90\x03\n" +
 	"\x04Raft\x124\n" +
 	"\vRequestVote\x12\x11.raft.VoteRequest\x1a\x12.raft.VoteResponse\x12H\n" +
 	"\rAppendEntries\x12\x1a.raft.AppendEntriesRequest\x1a\x1b.raft.AppendEntriesResponse\x12N\n" +
 	"\x0fInstallSnapshot\x12\x1c.raft.InstallSnapshotRequest\x1a\x1d.raft.InstallSnapshotResponse\x12B\n" +
 	"\vJoinCluster\x12\x18.raft.JoinClusterRequest\x1a\x19.raft.JoinClusterResponse\x12E\n" +
-	"\fRemoveServer\x12\x19.raft.RemoveServerRequest\x1a\x1a.raft.RemoveServerResponseB Z\x1egithub.com/salahayoub/skeg/apib\x06proto3"
+	"\fRemoveServer\x12\x19.raft.RemoveServerRequest\x1a\x1a.raft.RemoveServerResponse\x12-\n" +
+	"\x04Read\x12\x11.raft.ReadRequest\x1a\x12.raft.ReadResponseB Z\x1egithub.com/salahayoub/skeg/apib\x06proto3"
 
 var (
 	file_api_raft_proto_rawDescOnce sync.Once
@@ -972,7 +1141,7 @@ func file_api_raft_proto_rawDescGZIP() []byte {
 }
 
 var file_api_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_api_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_api_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_api_raft_proto_goTypes = []any{
 	(LogType)(0),                    // 0: raft.LogType
 	(*LogEntry)(nil),                // 1: raft.LogEntry
@@ -986,25 +1155,29 @@ var file_api_raft_proto_goTypes = []any{
 	(*JoinClusterResponse)(nil),     // 9: raft.JoinClusterResponse
 	(*RemoveServerRequest)(nil),     // 10: raft.RemoveServerRequest
 	(*RemoveServerResponse)(nil),    // 11: raft.RemoveServerResponse
-	(*ServerInfo)(nil),              // 12: raft.ServerInfo
-	(*ClusterConfiguration)(nil),    // 13: raft.ClusterConfiguration
+	(*ReadRequest)(nil),             // 12: raft.ReadRequest
+	(*ReadResponse)(nil),            // 13: raft.ReadResponse
+	(*ServerInfo)(nil),              // 14: raft.ServerInfo
+	(*ClusterConfiguration)(nil),    // 15: raft.ClusterConfiguration
 }
 var file_api_raft_proto_depIdxs = []int32{
 	0,  // 0: raft.LogEntry.type:type_name -> raft.LogType
 	1,  // 1: raft.AppendEntriesRequest.entries:type_name -> raft.LogEntry
-	12, // 2: raft.ClusterConfiguration.servers:type_name -> raft.ServerInfo
+	14, // 2: raft.ClusterConfiguration.servers:type_name -> raft.ServerInfo
 	2,  // 3: raft.Raft.RequestVote:input_type -> raft.VoteRequest
 	4,  // 4: raft.Raft.AppendEntries:input_type -> raft.AppendEntriesRequest
 	6,  // 5: raft.Raft.InstallSnapshot:input_type -> raft.InstallSnapshotRequest
 	8,  // 6: raft.Raft.JoinCluster:input_type -> raft.JoinClusterRequest
 	10, // 7: raft.Raft.RemoveServer:input_type -> raft.RemoveServerRequest
-	3,  // 8: raft.Raft.RequestVote:output_type -> raft.VoteResponse
-	5,  // 9: raft.Raft.AppendEntries:output_type -> raft.AppendEntriesResponse
-	7,  // 10: raft.Raft.InstallSnapshot:output_type -> raft.InstallSnapshotResponse
-	9,  // 11: raft.Raft.JoinCluster:output_type -> raft.JoinClusterResponse
-	11, // 12: raft.Raft.RemoveServer:output_type -> raft.RemoveServerResponse
-	8,  // [8:13] is the sub-list for method output_type
-	3,  // [3:8] is the sub-list for method input_type
+	12, // 8: raft.Raft.Read:input_type -> raft.ReadRequest
+	3,  // 9: raft.Raft.RequestVote:output_type -> raft.VoteResponse
+	5,  // 10: raft.Raft.AppendEntries:output_type -> raft.AppendEntriesResponse
+	7,  // 11: raft.Raft.InstallSnapshot:output_type -> raft.InstallSnapshotResponse
+	9,  // 12: raft.Raft.JoinCluster:output_type -> raft.JoinClusterResponse
+	11, // 13: raft.Raft.RemoveServer:output_type -> raft.RemoveServerResponse
+	13, // 14: raft.Raft.Read:output_type -> raft.ReadResponse
+	9,  // [9:15] is the sub-list for method output_type
+	3,  // [3:9] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -1021,7 +1194,7 @@ func file_api_raft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_raft_proto_rawDesc), len(file_api_raft_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

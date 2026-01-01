@@ -89,6 +89,24 @@ message RemoveServerResponse {
     string error = 3;
 }
 
+// Read Request for forwarding reads from followers to leader
+message ReadRequest {
+    string key = 1;
+    // Consistency level: 0 = Linearizable, 1 = LeaseRead, 2 = Stale
+    int32 consistency = 2;
+    string request_id = 3;
+}
+
+message ReadResponse {
+    bytes value = 1;
+    bool found = 2;
+    uint64 applied_index = 3;
+    uint64 term = 4;
+    int32 consistency = 5;
+    string error = 6;
+    string leader_hint = 7;
+}
+
 // Cluster Configuration - stored in LOG_CONFIGURATION entries
 message ServerInfo {
     string id = 1;
@@ -116,4 +134,7 @@ service Raft {
     
     // RemoveServer is called to remove a node from the cluster.
     rpc RemoveServer(RemoveServerRequest) returns (RemoveServerResponse);
+    
+    // Read is called by followers to forward read requests to the leader.
+    rpc Read(ReadRequest) returns (ReadResponse);
 }

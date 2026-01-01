@@ -24,6 +24,7 @@ const (
 	Raft_InstallSnapshot_FullMethodName = "/raft.Raft/InstallSnapshot"
 	Raft_JoinCluster_FullMethodName     = "/raft.Raft/JoinCluster"
 	Raft_RemoveServer_FullMethodName    = "/raft.Raft/RemoveServer"
+	Raft_Read_FullMethodName            = "/raft.Raft/Read"
 )
 
 // RaftClient is the client API for Raft service.
@@ -42,6 +43,8 @@ type RaftClient interface {
 	JoinCluster(ctx context.Context, in *JoinClusterRequest, opts ...grpc.CallOption) (*JoinClusterResponse, error)
 	// RemoveServer is called to remove a node from the cluster.
 	RemoveServer(ctx context.Context, in *RemoveServerRequest, opts ...grpc.CallOption) (*RemoveServerResponse, error)
+	// Read is called by followers to forward read requests to the leader.
+	Read(ctx context.Context, in *ReadRequest, opts ...grpc.CallOption) (*ReadResponse, error)
 }
 
 type raftClient struct {
@@ -102,6 +105,16 @@ func (c *raftClient) RemoveServer(ctx context.Context, in *RemoveServerRequest, 
 	return out, nil
 }
 
+func (c *raftClient) Read(ctx context.Context, in *ReadRequest, opts ...grpc.CallOption) (*ReadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadResponse)
+	err := c.cc.Invoke(ctx, Raft_Read_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RaftServer is the server API for Raft service.
 // All implementations must embed UnimplementedRaftServer
 // for forward compatibility.
@@ -118,6 +131,8 @@ type RaftServer interface {
 	JoinCluster(context.Context, *JoinClusterRequest) (*JoinClusterResponse, error)
 	// RemoveServer is called to remove a node from the cluster.
 	RemoveServer(context.Context, *RemoveServerRequest) (*RemoveServerResponse, error)
+	// Read is called by followers to forward read requests to the leader.
+	Read(context.Context, *ReadRequest) (*ReadResponse, error)
 	mustEmbedUnimplementedRaftServer()
 }
 
@@ -142,6 +157,9 @@ func (UnimplementedRaftServer) JoinCluster(context.Context, *JoinClusterRequest)
 }
 func (UnimplementedRaftServer) RemoveServer(context.Context, *RemoveServerRequest) (*RemoveServerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveServer not implemented")
+}
+func (UnimplementedRaftServer) Read(context.Context, *ReadRequest) (*ReadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Read not implemented")
 }
 func (UnimplementedRaftServer) mustEmbedUnimplementedRaftServer() {}
 func (UnimplementedRaftServer) testEmbeddedByValue()              {}
@@ -254,6 +272,24 @@ func _Raft_RemoveServer_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Raft_Read_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).Read(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_Read_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).Read(ctx, req.(*ReadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Raft_ServiceDesc is the grpc.ServiceDesc for Raft service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -280,6 +316,10 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveServer",
 			Handler:    _Raft_RemoveServer_Handler,
+		},
+		{
+			MethodName: "Read",
+			Handler:    _Raft_Read_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

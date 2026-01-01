@@ -112,6 +112,12 @@ type Config struct {
 	// if not set. Typical values are in the range of 1-10ms for well-synchronized
 	// clocks (e.g., NTP).
 	ClockDriftBound time.Duration
+
+	// ForwardReads enables automatic forwarding of read requests from followers
+	// to the leader. When true (default), followers will forward linearizable
+	// and lease-based read requests to the leader. When false, followers return
+	// a redirect error with a leader hint instead.
+	ForwardReads bool
 }
 
 // DefaultSnapshotChunkSize is the default chunk size for InstallSnapshot RPC (1MB).
@@ -735,6 +741,10 @@ func (r *Raft) handleRPC(rpc transport.RPC) {
 		removeResp := r.handleRemoveServer(req)
 		resp.Response = removeResp
 
+	case *api.ReadRequest:
+		readResp := r.handleReadRequest(req)
+		resp.Response = readResp
+
 	default:
 		resp.Error = errors.New("unknown RPC type")
 	}
@@ -990,6 +1000,43 @@ func (r *Raft) handleRemoveServer(req *api.RemoveServerRequest) *api.RemoveServe
 	}
 	return &api.RemoveServerResponse{
 		Success: true,
+	}
+}
+
+// handleReadRequest processes an incoming Read RPC (forwarded from a follower).
+func (r *Raft) handleReadRequest(req *api.ReadRequest) *api.ReadResponse {
+	// Convert proto request to internal ReadRequest
+	readReq := &ReadRequest{
+		Key:         req.Key,
+		Consistency: ConsistencyLevel(req.Consistency),
+		RequestID:   req.RequestId,
+	}
+
+	// Use the election timeout as the default timeout for forwarded reads
+	timeout := r.config.ElectionTimeout
+
+	// Perform the read operation
+	resp, err := r.Read(readReq, timeout)
+	if err != nil {
+		// Check if it's a NotLeaderError and include the leader hint
+		if notLeaderErr, ok := err.(*NotLeaderError); ok {
+			return &api.ReadResponse{
+				Error:      notLeaderErr.Error(),
+				LeaderHint: notLeaderErr.LeaderHint,
+			}
+		}
+		return &api.ReadResponse{
+			Error: err.Error(),
+		}
+	}
+
+	// Convert internal response to proto response
+	return &api.ReadResponse{
+		Value:        resp.Value,
+		Found:        resp.Found,
+		AppliedIndex: resp.AppliedIndex,
+		Term:         resp.Term,
+		Consistency:  int32(resp.Consistency),
 	}
 }
 
@@ -1287,7 +1334,8 @@ func (r *Raft) ReadLease(key string, timeout time.Duration) (*ReadResponse, erro
 // - Stale: Fastest, may return stale data
 //
 // For Linearizable and LeaseRead consistency levels, this method can only be
-// called on the leader. Non-leaders will return ErrNotLeader with a hint
+// called on the leader. Non-leaders will either forward the request to the
+// leader (if ForwardReads is enabled) or return ErrNotLeader with a hint
 // about the current leader for client redirection.
 //
 // For Stale consistency, the read can be served by any node.
@@ -1318,13 +1366,90 @@ func (r *Raft) Read(req *ReadRequest, timeout time.Duration) (*ReadResponse, err
 		}, nil
 
 	case LeaseRead:
-		// Lease-based reads require leadership
-		return r.ReadLease(req.Key, timeout)
+		// Lease-based reads require leadership - check if we need to forward
+		resp, err := r.ReadLease(req.Key, timeout)
+		if err != nil {
+			// Check if we should forward to leader
+			if notLeaderErr, ok := err.(*NotLeaderError); ok {
+				return r.maybeForwardRead(req, timeout, notLeaderErr.LeaderHint)
+			}
+		}
+		return resp, err
 
 	case Linearizable:
 		fallthrough
 	default:
-		// Linearizable reads require leadership
-		return r.ReadLinearizable(req.Key, timeout)
+		// Linearizable reads require leadership - check if we need to forward
+		resp, err := r.ReadLinearizable(req.Key, timeout)
+		if err != nil {
+			// Check if we should forward to leader
+			if notLeaderErr, ok := err.(*NotLeaderError); ok {
+				return r.maybeForwardRead(req, timeout, notLeaderErr.LeaderHint)
+			}
+		}
+		return resp, err
 	}
+}
+
+// maybeForwardRead forwards a read request to the leader if forwarding is enabled.
+// If forwarding is disabled, it returns an error with a leader hint.
+func (r *Raft) maybeForwardRead(req *ReadRequest, timeout time.Duration, leaderHint string) (*ReadResponse, error) {
+	r.mu.RLock()
+	forwardReads := r.config.ForwardReads
+	leaderID := r.leaderID
+	r.mu.RUnlock()
+
+	// Use the leader hint if provided, otherwise use the known leader
+	target := leaderHint
+	if target == "" {
+		target = leaderID
+	}
+
+	// If forwarding is disabled, return redirect error
+	if !forwardReads {
+		return nil, &NotLeaderError{LeaderHint: target}
+	}
+
+	// If no leader is known, return ErrLeaderUnknown
+	if target == "" {
+		return nil, ErrLeaderUnknown
+	}
+
+	// Forward the read request to the leader
+	return r.forwardReadToLeader(req, timeout, target)
+}
+
+// forwardReadToLeader forwards a read request to the specified leader.
+func (r *Raft) forwardReadToLeader(req *ReadRequest, timeout time.Duration, leaderAddr string) (*ReadResponse, error) {
+	// Create the proto request
+	protoReq := &api.ReadRequest{
+		Key:         req.Key,
+		Consistency: int32(req.Consistency),
+		RequestId:   req.RequestID,
+	}
+
+	// Send the request to the leader via transport
+	protoResp, err := r.transport.SendRead(leaderAddr, protoReq)
+	if err != nil {
+		// Return error with leader hint for client retry
+		return nil, &NotLeaderError{LeaderHint: leaderAddr}
+	}
+
+	// Check if the leader returned an error
+	if protoResp.Error != "" {
+		// If the leader is no longer the leader, return the new leader hint
+		if protoResp.LeaderHint != "" {
+			return nil, &NotLeaderError{LeaderHint: protoResp.LeaderHint}
+		}
+		return nil, errors.New(protoResp.Error)
+	}
+
+	// Convert proto response to ReadResponse
+	return &ReadResponse{
+		Value:        protoResp.Value,
+		Found:        protoResp.Found,
+		AppliedIndex: protoResp.AppliedIndex,
+		Term:         protoResp.Term,
+		Consistency:  ConsistencyLevel(protoResp.Consistency),
+	}, nil
 }

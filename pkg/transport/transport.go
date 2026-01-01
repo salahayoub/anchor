@@ -45,6 +45,9 @@ type Transport interface {
 	// SendRemoveServer sends a remove server request to the target node.
 	SendRemoveServer(target string, req *api.RemoveServerRequest) (*api.RemoveServerResponse, error)
 
+	// SendRead sends a read request to the target node (used for follower read forwarding).
+	SendRead(target string, req *api.ReadRequest) (*api.ReadResponse, error)
+
 	// Connect establishes and pools a connection to the peer address.
 	Connect(peerAddr string) error
 

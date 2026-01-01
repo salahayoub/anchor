@@ -301,6 +301,14 @@ var (
 	// ErrReadTimeout is returned when a read operation times out.
 	// This is a general timeout error for read operations.
 	ErrReadTimeout = errors.New("read operation timed out")
+
+	// ErrLeaderUnknown is returned when a follower cannot forward a read
+	// request because the leader is unknown.
+	ErrLeaderUnknown = errors.New("leader unknown")
+
+	// ErrForwardingDisabled is returned when a follower receives a read
+	// request but forwarding is disabled in the configuration.
+	ErrForwardingDisabled = errors.New("read forwarding is disabled")
 )
 
 // LeaseState tracks the leader lease for lease-based reads.
