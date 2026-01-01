@@ -192,6 +192,10 @@ func (m *mockTransport) SendRemoveServer(target string, req *api.RemoveServerReq
 	return &api.RemoveServerResponse{Success: true}, nil
 }
 
+func (m *mockTransport) SendRead(target string, req *api.ReadRequest) (*api.ReadResponse, error) {
+	return &api.ReadResponse{Found: false}, nil
+}
+
 func (m *mockTransport) Connect(peerAddr string) error {
 	return nil
 }

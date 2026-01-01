@@ -96,6 +96,28 @@ type Config struct {
 	// SnapshotChunkSize controls the size of chunks when streaming snapshots
 	// to followers. Larger chunks reduce RPC overhead but increase memory usage.
 	SnapshotChunkSize int
+
+	// LeaseEnabled enables lease-based reads for better read performance.
+	// When enabled, the leader can serve reads without quorum confirmation
+	// as long as the lease is valid. Requires clock synchronization assumptions.
+	LeaseEnabled bool
+
+	// LeaseDuration is the duration of the leader lease.
+	// Must be less than ElectionTimeout - ClockDriftBound to ensure safety.
+	// If not set (zero), defaults to ElectionTimeout * 0.9.
+	LeaseDuration time.Duration
+
+	// ClockDriftBound is the maximum expected clock drift between nodes.
+	// Used to calculate safe lease duration. A conservative default is used
+	// if not set. Typical values are in the range of 1-10ms for well-synchronized
+	// clocks (e.g., NTP).
+	ClockDriftBound time.Duration
+
+	// ForwardReads enables automatic forwarding of read requests from followers
+	// to the leader. When true (default), followers will forward linearizable
+	// and lease-based read requests to the leader. When false, followers return
+	// a redirect error with a leader hint instead.
+	ForwardReads bool
 }
 
 // DefaultSnapshotChunkSize is the default chunk size for InstallSnapshot RPC (1MB).
@@ -183,6 +205,15 @@ type Raft struct {
 
 	pendingSnapshot *pendingSnapshotState // Follower-side snapshot installation
 
+	// Lease state for lease-based reads
+	leaseState *LeaseState
+
+	// ReadOnly manages pending read-index requests for linearizable reads
+	readOnly *ReadOnly
+
+	// readMetrics tracks statistics for read operations
+	readMetrics *ReadMetrics
+
 	// Dependencies
 	logStore     LogStore
 	stableStore  StableStore
@@ -200,6 +231,12 @@ type Raft struct {
 	// Election tracking
 	votesReceived map[string]bool
 	electionTerm  uint64
+
+	// Heartbeat tracking for lease renewal
+	// Tracks which peers have acknowledged the current heartbeat round
+	heartbeatAcks     map[string]bool
+	heartbeatRound    uint64 // Incremented each heartbeat round
+	lastHeartbeatTime time.Time
 
 	// Synchronization
 	mu      sync.RWMutex
@@ -272,6 +309,22 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 		}
 	}
 
+	// Validate and set lease configuration if lease-based reads are enabled
+	if config.LeaseEnabled {
+		// Set default lease duration if not specified (90% of election timeout)
+		if config.LeaseDuration == 0 {
+			config.LeaseDuration = time.Duration(float64(config.ElectionTimeout) * 0.9)
+		}
+
+		// Validate lease duration safety: lease_duration < election_timeout - clock_drift_bound
+		// This ensures the lease expires before a new leader can be elected
+		safeDuration := config.ElectionTimeout - config.ClockDriftBound
+		if config.LeaseDuration >= safeDuration {
+			return nil, fmt.Errorf("lease duration (%v) must be less than election timeout (%v) minus clock drift bound (%v) = %v",
+				config.LeaseDuration, config.ElectionTimeout, config.ClockDriftBound, safeDuration)
+		}
+	}
+
 	r := &Raft{
 		currentTerm: currentTerm,
 		votedFor:    votedFor,
@@ -303,8 +356,24 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 		votesReceived: make(map[string]bool),
 		electionTerm:  0,
 
+		heartbeatAcks:     make(map[string]bool),
+		heartbeatRound:    0,
+		lastHeartbeatTime: time.Time{},
+
 		running: false,
 	}
+
+	// Initialize lease state if lease-based reads are enabled
+	if config.LeaseEnabled {
+		r.leaseState = NewLeaseState(config.LeaseDuration)
+	}
+
+	// Initialize ReadOnly for managing read-index requests
+	// Use election timeout as the read timeout for quorum confirmation
+	r.readOnly = NewReadOnly(config.ElectionTimeout, r.leaseState)
+
+	// Initialize read metrics for tracking read operation statistics
+	r.readMetrics = NewReadMetrics()
 
 	// Reconstruct cluster membership from committed LOG_CONFIG entries
 	if err := r.reconstructConfigFromLog(); err != nil {
@@ -460,6 +529,31 @@ func (r *Raft) LastApplied() uint64 {
 	return r.lastApplied
 }
 
+// GetReadOnly returns the ReadOnly instance for read operations.
+func (r *Raft) GetReadOnly() *ReadOnly {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.readOnly
+}
+
+// GetLeaseState returns the LeaseState for lease-based reads.
+func (r *Raft) GetLeaseState() *LeaseState {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.leaseState
+}
+
+// GetReadMetrics returns a thread-safe copy of the current read metrics.
+// The returned copy is a snapshot of the metrics at the time of the call.
+func (r *Raft) GetReadMetrics() *ReadMetrics {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.readMetrics == nil {
+		return NewReadMetrics()
+	}
+	return r.readMetrics.Copy()
+}
+
 // ApplyEntries is a public method to trigger entry application.
 func (r *Raft) ApplyEntries() {
 	r.mu.Lock()
@@ -543,6 +637,11 @@ func (r *Raft) Stop() error {
 	close(r.stopChan)
 	<-r.doneChan
 
+	// Stop the ReadOnly cleanup goroutine
+	if r.readOnly != nil {
+		r.readOnly.Stop()
+	}
+
 	return nil
 }
 
@@ -567,10 +666,18 @@ func (r *Raft) run() {
 			r.mu.Unlock()
 
 		case <-r.heartbeatTicker.C:
-			r.mu.RLock()
+			r.mu.Lock()
 			isLeader := r.state == Leader
 			peers := r.config.Peers
-			r.mu.RUnlock()
+			if isLeader {
+				// Start a new heartbeat round
+				r.heartbeatRound++
+				r.heartbeatAcks = make(map[string]bool)
+				// Leader counts itself as an ack
+				r.heartbeatAcks[r.config.ID] = true
+				r.lastHeartbeatTime = time.Now()
+			}
+			r.mu.Unlock()
 
 			if isLeader {
 				for _, peer := range peers {
@@ -633,6 +740,10 @@ func (r *Raft) handleRPC(rpc transport.RPC) {
 	case *api.RemoveServerRequest:
 		removeResp := r.handleRemoveServer(req)
 		resp.Response = removeResp
+
+	case *api.ReadRequest:
+		readResp := r.handleReadRequest(req)
+		resp.Response = readResp
 
 	default:
 		resp.Error = errors.New("unknown RPC type")
@@ -892,6 +1003,43 @@ func (r *Raft) handleRemoveServer(req *api.RemoveServerRequest) *api.RemoveServe
 	}
 }
 
+// handleReadRequest processes an incoming Read RPC (forwarded from a follower).
+func (r *Raft) handleReadRequest(req *api.ReadRequest) *api.ReadResponse {
+	// Convert proto request to internal ReadRequest
+	readReq := &ReadRequest{
+		Key:         req.Key,
+		Consistency: ConsistencyLevel(req.Consistency),
+		RequestID:   req.RequestId,
+	}
+
+	// Use the election timeout as the default timeout for forwarded reads
+	timeout := r.config.ElectionTimeout
+
+	// Perform the read operation
+	resp, err := r.Read(readReq, timeout)
+	if err != nil {
+		// Check if it's a NotLeaderError and include the leader hint
+		if notLeaderErr, ok := err.(*NotLeaderError); ok {
+			return &api.ReadResponse{
+				Error:      notLeaderErr.Error(),
+				LeaderHint: notLeaderErr.LeaderHint,
+			}
+		}
+		return &api.ReadResponse{
+			Error: err.Error(),
+		}
+	}
+
+	// Convert internal response to proto response
+	return &api.ReadResponse{
+		Value:        resp.Value,
+		Found:        resp.Found,
+		AppliedIndex: resp.AppliedIndex,
+		Term:         resp.Term,
+		Consistency:  int32(resp.Consistency),
+	}
+}
+
 // compactLog deletes log entries from FirstIndex to lastSnapshotIndex.
 func (r *Raft) compactLog() error {
 	if r.lastSnapshotIndex == 0 {
@@ -934,4 +1082,374 @@ func (r *Raft) CompactLog() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.compactLog()
+}
+
+// ReadStale performs a stale read directly from the state machine without
+// any coordination. This provides the fastest read path but may return
+// stale data if the node is behind the leader.
+//
+// The state machine must implement ReadableStateMachine interface.
+//
+// Returns:
+// - StaleReadResult containing the value, found status, applied index, and term
+// - error if the state machine doesn't support reads or other errors occur
+//
+
+func (r *Raft) ReadStale(key string) (*StaleReadResult, error) {
+	startTime := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Check if state machine supports reads
+	readable, ok := r.stateMachine.(ReadableStateMachine)
+	if !ok {
+		return nil, errors.New("state machine does not support reads")
+	}
+
+	// Read directly from state machine without coordination
+	value, found := readable.Get(key)
+
+	// Record metrics
+	r.readMetrics.IncrementStaleReads()
+	r.readMetrics.RecordStaleLatency(time.Since(startTime))
+
+	return &StaleReadResult{
+		Value:        value,
+		Found:        found,
+		AppliedIndex: r.lastApplied,
+		Term:         r.currentTerm,
+	}, nil
+}
+
+// ReadLinearizable performs a linearizable read that guarantees seeing the
+// most recent committed write. This is achieved by:
+// 1. Recording the current commit index as the read index
+// 2. Confirming leadership via quorum heartbeat
+// 3. Waiting for the applied index to reach the read index
+// 4. Reading from the state machine
+//
+// This method can only be called on the leader. Non-leaders will return ErrNotLeader.
+//
+// The state machine must implement ReadableStateMachine interface.
+//
+
+func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadResponse, error) {
+	startTime := time.Now()
+	r.mu.Lock()
+
+	// Only leaders can serve linearizable reads
+	if r.state != Leader {
+		leaderID := r.leaderID
+		r.mu.Unlock()
+		return nil, &NotLeaderError{LeaderHint: leaderID}
+	}
+
+	// Check if running
+	if !r.running {
+		r.mu.Unlock()
+		return nil, ErrStopped
+	}
+
+	// Check if state machine supports reads
+	readable, ok := r.stateMachine.(ReadableStateMachine)
+	if !ok {
+		r.mu.Unlock()
+		return nil, errors.New("state machine does not support reads")
+	}
+
+	// Record the current commit index as the read index
+	readIndex := r.commitIndex
+	currentTerm := r.currentTerm
+
+	// Generate a unique request ID for this read
+	requestID := fmt.Sprintf("read-%d-%d", time.Now().UnixNano(), readIndex)
+
+	// Add to pending reads - this will be confirmed via heartbeat responses
+	respChan := r.readOnly.AddPendingRead(requestID, readIndex)
+
+	// Leader counts itself as an ack
+	voters := r.getVotersUnlocked()
+	r.readOnly.AckRead(requestID, r.config.ID, voters)
+
+	// Check if we already have quorum (single-node cluster case)
+	pendingRead := r.readOnly.GetPendingRead(requestID)
+	if pendingRead == nil {
+		// Already completed (had quorum from self-ack in single-node cluster)
+		// Record quorum confirmation
+		r.readMetrics.IncrementQuorumConfirmations()
+
+		// Wait for applied index to reach read index
+		for r.lastApplied < readIndex {
+			r.mu.Unlock()
+			time.Sleep(time.Millisecond)
+			r.mu.Lock()
+			if r.state != Leader {
+				r.mu.Unlock()
+				return nil, ErrNotLeader
+			}
+		}
+
+		// Read from state machine
+		value, found := readable.Get(key)
+		appliedIndex := r.lastApplied
+		r.mu.Unlock()
+
+		// Record metrics
+		r.readMetrics.IncrementLinearizableReads()
+		r.readMetrics.RecordLinearizableLatency(time.Since(startTime))
+
+		return &ReadResponse{
+			Value:        []byte(value),
+			Found:        found,
+			AppliedIndex: appliedIndex,
+			Term:         currentTerm,
+			Consistency:  Linearizable,
+		}, nil
+	}
+
+	r.mu.Unlock()
+
+	// Wait for quorum confirmation or timeout
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-respChan:
+		if err != nil {
+			// Record quorum timeout if that was the error
+			if err == ErrQuorumTimeout {
+				r.readMetrics.IncrementQuorumTimeouts()
+			}
+			return nil, err
+		}
+		// Record successful quorum confirmation
+		r.readMetrics.IncrementQuorumConfirmations()
+	case <-timer.C:
+		r.readOnly.RemovePendingRead(requestID)
+		r.readMetrics.IncrementQuorumTimeouts()
+		return nil, ErrQuorumTimeout
+	}
+
+	// Quorum confirmed - now wait for applied index to reach read index
+	r.mu.Lock()
+	for r.lastApplied < readIndex {
+		r.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		r.mu.Lock()
+		if r.state != Leader {
+			r.mu.Unlock()
+			return nil, ErrNotLeader
+		}
+	}
+
+	// Read from state machine
+	value, found := readable.Get(key)
+	appliedIndex := r.lastApplied
+	r.mu.Unlock()
+
+	// Record metrics
+	r.readMetrics.IncrementLinearizableReads()
+	r.readMetrics.RecordLinearizableLatency(time.Since(startTime))
+
+	return &ReadResponse{
+		Value:        []byte(value),
+		Found:        found,
+		AppliedIndex: appliedIndex,
+		Term:         currentTerm,
+		Consistency:  Linearizable,
+	}, nil
+}
+
+// ReadLease performs a lease-based read that provides strong consistency
+// with better performance than linearizable reads when the lease is valid.
+//
+// If the leader lease is valid, the read is served directly from the state
+// machine without quorum confirmation. If the lease has expired, the method
+// falls back to ReadLinearizable for safety.
+//
+// This method can only be called on the leader. Non-leaders will return ErrNotLeader.
+// Lease-based reads must be enabled in the configuration.
+//
+// The state machine must implement ReadableStateMachine interface.
+
+func (r *Raft) ReadLease(key string, timeout time.Duration) (*ReadResponse, error) {
+	startTime := time.Now()
+	r.mu.RLock()
+
+	// Only leaders can serve lease-based reads
+	if r.state != Leader {
+		leaderID := r.leaderID
+		r.mu.RUnlock()
+		return nil, &NotLeaderError{LeaderHint: leaderID}
+	}
+
+	// Check if lease-based reads are enabled
+	if r.leaseState == nil {
+		r.mu.RUnlock()
+		return nil, errors.New("lease-based reads are not enabled")
+	}
+
+	// Check if state machine supports reads
+	readable, ok := r.stateMachine.(ReadableStateMachine)
+	if !ok {
+		r.mu.RUnlock()
+		return nil, errors.New("state machine does not support reads")
+	}
+
+	// Check if lease is valid
+	if r.leaseState.IsValid() {
+		// Lease is valid - read directly from state machine
+		value, found := readable.Get(key)
+		appliedIndex := r.lastApplied
+		currentTerm := r.currentTerm
+		r.mu.RUnlock()
+
+		// Record metrics for lease read
+		r.readMetrics.IncrementLeaseReads()
+		r.readMetrics.RecordLeaseLatency(time.Since(startTime))
+
+		return &ReadResponse{
+			Value:        []byte(value),
+			Found:        found,
+			AppliedIndex: appliedIndex,
+			Term:         currentTerm,
+			Consistency:  LeaseRead,
+		}, nil
+	}
+
+	r.mu.RUnlock()
+
+	// Lease expired - record expiration and fall back to linearizable read
+	r.readMetrics.IncrementLeaseExpirations()
+	return r.ReadLinearizable(key, timeout)
+}
+
+// Read performs a read operation with the specified consistency level.
+// This is the main entry point for read operations that routes to the
+// appropriate read method based on the consistency level.
+//
+// Consistency levels:
+// - Linearizable (default): Strongest consistency, requires quorum confirmation
+// - LeaseRead: Strong consistency with better performance when lease is valid
+// - Stale: Fastest, may return stale data
+//
+// For Linearizable and LeaseRead consistency levels, this method can only be
+// called on the leader. Non-leaders will either forward the request to the
+// leader (if ForwardReads is enabled) or return ErrNotLeader with a hint
+// about the current leader for client redirection.
+//
+// For Stale consistency, the read can be served by any node.
+//
+// The state machine must implement ReadableStateMachine interface.
+//
+
+func (r *Raft) Read(req *ReadRequest, timeout time.Duration) (*ReadResponse, error) {
+	// Default to Linearizable if not specified
+	consistency := req.Consistency
+	if consistency != Linearizable && consistency != LeaseRead && consistency != Stale {
+		consistency = Linearizable
+	}
+
+	switch consistency {
+	case Stale:
+		// Stale reads can be served by any node
+		result, err := r.ReadStale(req.Key)
+		if err != nil {
+			return &ReadResponse{Error: err}, err
+		}
+		return &ReadResponse{
+			Value:        []byte(result.Value),
+			Found:        result.Found,
+			AppliedIndex: result.AppliedIndex,
+			Term:         result.Term,
+			Consistency:  Stale,
+		}, nil
+
+	case LeaseRead:
+		// Lease-based reads require leadership - check if we need to forward
+		resp, err := r.ReadLease(req.Key, timeout)
+		if err != nil {
+			// Check if we should forward to leader
+			if notLeaderErr, ok := err.(*NotLeaderError); ok {
+				return r.maybeForwardRead(req, timeout, notLeaderErr.LeaderHint)
+			}
+		}
+		return resp, err
+
+	case Linearizable:
+		fallthrough
+	default:
+		// Linearizable reads require leadership - check if we need to forward
+		resp, err := r.ReadLinearizable(req.Key, timeout)
+		if err != nil {
+			// Check if we should forward to leader
+			if notLeaderErr, ok := err.(*NotLeaderError); ok {
+				return r.maybeForwardRead(req, timeout, notLeaderErr.LeaderHint)
+			}
+		}
+		return resp, err
+	}
+}
+
+// maybeForwardRead forwards a read request to the leader if forwarding is enabled.
+// If forwarding is disabled, it returns an error with a leader hint.
+func (r *Raft) maybeForwardRead(req *ReadRequest, timeout time.Duration, leaderHint string) (*ReadResponse, error) {
+	r.mu.RLock()
+	forwardReads := r.config.ForwardReads
+	leaderID := r.leaderID
+	r.mu.RUnlock()
+
+	// Use the leader hint if provided, otherwise use the known leader
+	target := leaderHint
+	if target == "" {
+		target = leaderID
+	}
+
+	// If forwarding is disabled, return redirect error
+	if !forwardReads {
+		return nil, &NotLeaderError{LeaderHint: target}
+	}
+
+	// If no leader is known, return ErrLeaderUnknown
+	if target == "" {
+		return nil, ErrLeaderUnknown
+	}
+
+	// Forward the read request to the leader
+	return r.forwardReadToLeader(req, timeout, target)
+}
+
+// forwardReadToLeader forwards a read request to the specified leader.
+func (r *Raft) forwardReadToLeader(req *ReadRequest, timeout time.Duration, leaderAddr string) (*ReadResponse, error) {
+	// Create the proto request
+	protoReq := &api.ReadRequest{
+		Key:         req.Key,
+		Consistency: int32(req.Consistency),
+		RequestId:   req.RequestID,
+	}
+
+	// Send the request to the leader via transport
+	protoResp, err := r.transport.SendRead(leaderAddr, protoReq)
+	if err != nil {
+		// Return error with leader hint for client retry
+		return nil, &NotLeaderError{LeaderHint: leaderAddr}
+	}
+
+	// Check if the leader returned an error
+	if protoResp.Error != "" {
+		// If the leader is no longer the leader, return the new leader hint
+		if protoResp.LeaderHint != "" {
+			return nil, &NotLeaderError{LeaderHint: protoResp.LeaderHint}
+		}
+		return nil, errors.New(protoResp.Error)
+	}
+
+	// Convert proto response to ReadResponse
+	return &ReadResponse{
+		Value:        protoResp.Value,
+		Found:        protoResp.Found,
+		AppliedIndex: protoResp.AppliedIndex,
+		Term:         protoResp.Term,
+		Consistency:  ConsistencyLevel(protoResp.Consistency),
+	}, nil
 }

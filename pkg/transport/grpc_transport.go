@@ -134,6 +134,18 @@ func (t *GRPCTransport) SendRemoveServer(target string, req *api.RemoveServerReq
 	return client.RemoveServer(context.Background(), req)
 }
 
+// SendRead sends a read request to the target node (used for follower read forwarding).
+// It uses the connection pool to reuse connections.
+func (t *GRPCTransport) SendRead(target string, req *api.ReadRequest) (*api.ReadResponse, error) {
+	conn, err := t.getOrCreateConn(target)
+	if err != nil {
+		return nil, err
+	}
+
+	client := api.NewRaftClient(conn)
+	return client.Read(context.Background(), req)
+}
+
 // Connect establishes and pools a connection to the peer address.
 // If a connection already exists for the peer, this is a no-op.
 func (t *GRPCTransport) Connect(peerAddr string) error {
@@ -411,6 +423,44 @@ func (t *GRPCTransport) RemoveServer(ctx context.Context, req *api.RemoveServerR
 			return nil, fmt.Errorf("unexpected response type: %T", resp.Response)
 		}
 		return removeResp, nil
+	case <-t.shutdown:
+		return nil, ErrTransportClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+
+// Read handles incoming read requests from followers (implements api.RaftServer).
+// It wraps the request in an RPC struct and sends it to the consumer channel,
+// then waits for the Raft core to process and respond.
+func (t *GRPCTransport) Read(ctx context.Context, req *api.ReadRequest) (*api.ReadResponse, error) {
+	respChan := make(chan RPCResponse, 1)
+	rpc := RPC{
+		Request:  req,
+		RespChan: respChan,
+	}
+
+	// Send to consumer channel
+	select {
+	case t.consumer <- rpc:
+	case <-t.shutdown:
+		return nil, ErrTransportClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// Wait for response
+	select {
+	case resp := <-respChan:
+		if resp.Error != nil {
+			return nil, resp.Error
+		}
+		readResp, ok := resp.Response.(*api.ReadResponse)
+		if !ok {
+			return nil, fmt.Errorf("unexpected response type: %T", resp.Response)
+		}
+		return readResp, nil
 	case <-t.shutdown:
 		return nil, ErrTransportClosed
 	case <-ctx.Done():
