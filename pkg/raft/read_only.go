@@ -5,14 +5,195 @@
 // - ReadRequest and ReadResponse types for read operations
 // - Read-related error types
 // - LeaseState for lease-based read operations
+// - ReadMetrics for tracking read operation statistics
 package raft
 
 import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// ReadMetrics tracks statistics for read operations.
+// All counters are safe for concurrent access using atomic operations.
+//
+// Thread Safety: ReadMetrics is safe for concurrent use. All counter fields
+// use atomic operations for thread-safe increments and reads.
+type ReadMetrics struct {
+	// Counters for reads by consistency level
+	LinearizableReads uint64 // Total linearizable reads performed
+	LeaseReads        uint64 // Total lease-based reads performed
+	StaleReads        uint64 // Total stale reads performed
+
+	// Latency tracking (in nanoseconds for precision)
+	LinearizableLatencyTotal uint64 // Total latency for linearizable reads
+	LinearizableLatencyCount uint64 // Count for calculating average
+	LeaseLatencyTotal        uint64 // Total latency for lease reads
+	LeaseLatencyCount        uint64 // Count for calculating average
+	StaleLatencyTotal        uint64 // Total latency for stale reads
+	StaleLatencyCount        uint64 // Count for calculating average
+
+	// Lease event counters
+	LeaseExtensions  uint64 // Number of times the lease was extended/renewed
+	LeaseExpirations uint64 // Number of times the lease expired
+
+	// Quorum confirmation counter
+	QuorumConfirmations uint64 // Number of successful quorum confirmations
+	QuorumTimeouts      uint64 // Number of quorum confirmation timeouts
+}
+
+// NewReadMetrics creates a new ReadMetrics instance with all counters initialized to zero.
+func NewReadMetrics() *ReadMetrics {
+	return &ReadMetrics{}
+}
+
+// IncrementLinearizableReads atomically increments the linearizable read counter.
+func (m *ReadMetrics) IncrementLinearizableReads() {
+	atomic.AddUint64(&m.LinearizableReads, 1)
+}
+
+// IncrementLeaseReads atomically increments the lease read counter.
+func (m *ReadMetrics) IncrementLeaseReads() {
+	atomic.AddUint64(&m.LeaseReads, 1)
+}
+
+// IncrementStaleReads atomically increments the stale read counter.
+func (m *ReadMetrics) IncrementStaleReads() {
+	atomic.AddUint64(&m.StaleReads, 1)
+}
+
+// RecordLinearizableLatency records the latency for a linearizable read operation.
+func (m *ReadMetrics) RecordLinearizableLatency(latency time.Duration) {
+	atomic.AddUint64(&m.LinearizableLatencyTotal, uint64(latency.Nanoseconds()))
+	atomic.AddUint64(&m.LinearizableLatencyCount, 1)
+}
+
+// RecordLeaseLatency records the latency for a lease read operation.
+func (m *ReadMetrics) RecordLeaseLatency(latency time.Duration) {
+	atomic.AddUint64(&m.LeaseLatencyTotal, uint64(latency.Nanoseconds()))
+	atomic.AddUint64(&m.LeaseLatencyCount, 1)
+}
+
+// RecordStaleLatency records the latency for a stale read operation.
+func (m *ReadMetrics) RecordStaleLatency(latency time.Duration) {
+	atomic.AddUint64(&m.StaleLatencyTotal, uint64(latency.Nanoseconds()))
+	atomic.AddUint64(&m.StaleLatencyCount, 1)
+}
+
+// IncrementLeaseExtensions atomically increments the lease extension counter.
+func (m *ReadMetrics) IncrementLeaseExtensions() {
+	atomic.AddUint64(&m.LeaseExtensions, 1)
+}
+
+// IncrementLeaseExpirations atomically increments the lease expiration counter.
+func (m *ReadMetrics) IncrementLeaseExpirations() {
+	atomic.AddUint64(&m.LeaseExpirations, 1)
+}
+
+// IncrementQuorumConfirmations atomically increments the quorum confirmation counter.
+func (m *ReadMetrics) IncrementQuorumConfirmations() {
+	atomic.AddUint64(&m.QuorumConfirmations, 1)
+}
+
+// IncrementQuorumTimeouts atomically increments the quorum timeout counter.
+func (m *ReadMetrics) IncrementQuorumTimeouts() {
+	atomic.AddUint64(&m.QuorumTimeouts, 1)
+}
+
+// GetLinearizableReads returns the current linearizable read count.
+func (m *ReadMetrics) GetLinearizableReads() uint64 {
+	return atomic.LoadUint64(&m.LinearizableReads)
+}
+
+// GetLeaseReads returns the current lease read count.
+func (m *ReadMetrics) GetLeaseReads() uint64 {
+	return atomic.LoadUint64(&m.LeaseReads)
+}
+
+// GetStaleReads returns the current stale read count.
+func (m *ReadMetrics) GetStaleReads() uint64 {
+	return atomic.LoadUint64(&m.StaleReads)
+}
+
+// GetTotalReads returns the total number of reads across all consistency levels.
+func (m *ReadMetrics) GetTotalReads() uint64 {
+	return m.GetLinearizableReads() + m.GetLeaseReads() + m.GetStaleReads()
+}
+
+// GetAverageLinearizableLatency returns the average latency for linearizable reads.
+// Returns 0 if no linearizable reads have been recorded.
+func (m *ReadMetrics) GetAverageLinearizableLatency() time.Duration {
+	count := atomic.LoadUint64(&m.LinearizableLatencyCount)
+	if count == 0 {
+		return 0
+	}
+	total := atomic.LoadUint64(&m.LinearizableLatencyTotal)
+	return time.Duration(total / count)
+}
+
+// GetAverageLeaseLatency returns the average latency for lease reads.
+// Returns 0 if no lease reads have been recorded.
+func (m *ReadMetrics) GetAverageLeaseLatency() time.Duration {
+	count := atomic.LoadUint64(&m.LeaseLatencyCount)
+	if count == 0 {
+		return 0
+	}
+	total := atomic.LoadUint64(&m.LeaseLatencyTotal)
+	return time.Duration(total / count)
+}
+
+// GetAverageStaleLatency returns the average latency for stale reads.
+// Returns 0 if no stale reads have been recorded.
+func (m *ReadMetrics) GetAverageStaleLatency() time.Duration {
+	count := atomic.LoadUint64(&m.StaleLatencyCount)
+	if count == 0 {
+		return 0
+	}
+	total := atomic.LoadUint64(&m.StaleLatencyTotal)
+	return time.Duration(total / count)
+}
+
+// GetLeaseExtensions returns the current lease extension count.
+func (m *ReadMetrics) GetLeaseExtensions() uint64 {
+	return atomic.LoadUint64(&m.LeaseExtensions)
+}
+
+// GetLeaseExpirations returns the current lease expiration count.
+func (m *ReadMetrics) GetLeaseExpirations() uint64 {
+	return atomic.LoadUint64(&m.LeaseExpirations)
+}
+
+// GetQuorumConfirmations returns the current quorum confirmation count.
+func (m *ReadMetrics) GetQuorumConfirmations() uint64 {
+	return atomic.LoadUint64(&m.QuorumConfirmations)
+}
+
+// GetQuorumTimeouts returns the current quorum timeout count.
+func (m *ReadMetrics) GetQuorumTimeouts() uint64 {
+	return atomic.LoadUint64(&m.QuorumTimeouts)
+}
+
+// Copy returns a snapshot copy of the current metrics.
+// This is useful for getting a consistent view of all metrics at a point in time.
+func (m *ReadMetrics) Copy() *ReadMetrics {
+	return &ReadMetrics{
+		LinearizableReads:        atomic.LoadUint64(&m.LinearizableReads),
+		LeaseReads:               atomic.LoadUint64(&m.LeaseReads),
+		StaleReads:               atomic.LoadUint64(&m.StaleReads),
+		LinearizableLatencyTotal: atomic.LoadUint64(&m.LinearizableLatencyTotal),
+		LinearizableLatencyCount: atomic.LoadUint64(&m.LinearizableLatencyCount),
+		LeaseLatencyTotal:        atomic.LoadUint64(&m.LeaseLatencyTotal),
+		LeaseLatencyCount:        atomic.LoadUint64(&m.LeaseLatencyCount),
+		StaleLatencyTotal:        atomic.LoadUint64(&m.StaleLatencyTotal),
+		StaleLatencyCount:        atomic.LoadUint64(&m.StaleLatencyCount),
+		LeaseExtensions:          atomic.LoadUint64(&m.LeaseExtensions),
+		LeaseExpirations:         atomic.LoadUint64(&m.LeaseExpirations),
+		QuorumConfirmations:      atomic.LoadUint64(&m.QuorumConfirmations),
+		QuorumTimeouts:           atomic.LoadUint64(&m.QuorumTimeouts),
+	}
+}
 
 // ConsistencyLevel represents the consistency guarantee for read operations.
 // Different levels trade off between consistency and performance.
@@ -68,7 +249,6 @@ func ParseConsistencyLevel(s string) (ConsistencyLevel, error) {
 	}
 }
 
-
 // ReadRequest represents a request to read a value from the state machine.
 type ReadRequest struct {
 	// Key is the key to read from the state machine.
@@ -104,7 +284,6 @@ type ReadResponse struct {
 	// nil if the read was successful.
 	Error error
 }
-
 
 // Sentinel errors for read operations. Using sentinel errors enables callers
 // to use errors.Is() for reliable error handling even when errors are wrapped.

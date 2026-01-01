@@ -205,6 +205,9 @@ type Raft struct {
 	// ReadOnly manages pending read-index requests for linearizable reads
 	readOnly *ReadOnly
 
+	// readMetrics tracks statistics for read operations
+	readMetrics *ReadMetrics
+
 	// Dependencies
 	logStore     LogStore
 	stableStore  StableStore
@@ -362,6 +365,9 @@ func NewRaft(config Config, logStore LogStore, stableStore StableStore,
 	// Initialize ReadOnly for managing read-index requests
 	// Use election timeout as the read timeout for quorum confirmation
 	r.readOnly = NewReadOnly(config.ElectionTimeout, r.leaseState)
+
+	// Initialize read metrics for tracking read operation statistics
+	r.readMetrics = NewReadMetrics()
 
 	// Reconstruct cluster membership from committed LOG_CONFIG entries
 	if err := r.reconstructConfigFromLog(); err != nil {
@@ -529,6 +535,17 @@ func (r *Raft) GetLeaseState() *LeaseState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.leaseState
+}
+
+// GetReadMetrics returns a thread-safe copy of the current read metrics.
+// The returned copy is a snapshot of the metrics at the time of the call.
+func (r *Raft) GetReadMetrics() *ReadMetrics {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.readMetrics == nil {
+		return NewReadMetrics()
+	}
+	return r.readMetrics.Copy()
 }
 
 // ApplyEntries is a public method to trigger entry application.
@@ -1032,6 +1049,7 @@ func (r *Raft) CompactLog() error {
 //
 
 func (r *Raft) ReadStale(key string) (*StaleReadResult, error) {
+	startTime := time.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -1043,6 +1061,10 @@ func (r *Raft) ReadStale(key string) (*StaleReadResult, error) {
 
 	// Read directly from state machine without coordination
 	value, found := readable.Get(key)
+
+	// Record metrics
+	r.readMetrics.IncrementStaleReads()
+	r.readMetrics.RecordStaleLatency(time.Since(startTime))
 
 	return &StaleReadResult{
 		Value:        value,
@@ -1065,6 +1087,7 @@ func (r *Raft) ReadStale(key string) (*StaleReadResult, error) {
 //
 
 func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadResponse, error) {
+	startTime := time.Now()
 	r.mu.Lock()
 
 	// Only leaders can serve linearizable reads
@@ -1105,6 +1128,9 @@ func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadRespons
 	pendingRead := r.readOnly.GetPendingRead(requestID)
 	if pendingRead == nil {
 		// Already completed (had quorum from self-ack in single-node cluster)
+		// Record quorum confirmation
+		r.readMetrics.IncrementQuorumConfirmations()
+
 		// Wait for applied index to reach read index
 		for r.lastApplied < readIndex {
 			r.mu.Unlock()
@@ -1120,6 +1146,10 @@ func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadRespons
 		value, found := readable.Get(key)
 		appliedIndex := r.lastApplied
 		r.mu.Unlock()
+
+		// Record metrics
+		r.readMetrics.IncrementLinearizableReads()
+		r.readMetrics.RecordLinearizableLatency(time.Since(startTime))
 
 		return &ReadResponse{
 			Value:        []byte(value),
@@ -1139,10 +1169,17 @@ func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadRespons
 	select {
 	case err := <-respChan:
 		if err != nil {
+			// Record quorum timeout if that was the error
+			if err == ErrQuorumTimeout {
+				r.readMetrics.IncrementQuorumTimeouts()
+			}
 			return nil, err
 		}
+		// Record successful quorum confirmation
+		r.readMetrics.IncrementQuorumConfirmations()
 	case <-timer.C:
 		r.readOnly.RemovePendingRead(requestID)
+		r.readMetrics.IncrementQuorumTimeouts()
 		return nil, ErrQuorumTimeout
 	}
 
@@ -1162,6 +1199,10 @@ func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadRespons
 	value, found := readable.Get(key)
 	appliedIndex := r.lastApplied
 	r.mu.Unlock()
+
+	// Record metrics
+	r.readMetrics.IncrementLinearizableReads()
+	r.readMetrics.RecordLinearizableLatency(time.Since(startTime))
 
 	return &ReadResponse{
 		Value:        []byte(value),
@@ -1185,6 +1226,7 @@ func (r *Raft) ReadLinearizable(key string, timeout time.Duration) (*ReadRespons
 // The state machine must implement ReadableStateMachine interface.
 
 func (r *Raft) ReadLease(key string, timeout time.Duration) (*ReadResponse, error) {
+	startTime := time.Now()
 	r.mu.RLock()
 
 	// Only leaders can serve lease-based reads
@@ -1215,6 +1257,10 @@ func (r *Raft) ReadLease(key string, timeout time.Duration) (*ReadResponse, erro
 		currentTerm := r.currentTerm
 		r.mu.RUnlock()
 
+		// Record metrics for lease read
+		r.readMetrics.IncrementLeaseReads()
+		r.readMetrics.RecordLeaseLatency(time.Since(startTime))
+
 		return &ReadResponse{
 			Value:        []byte(value),
 			Found:        found,
@@ -1226,7 +1272,8 @@ func (r *Raft) ReadLease(key string, timeout time.Duration) (*ReadResponse, erro
 
 	r.mu.RUnlock()
 
-	// Lease expired - fall back to linearizable read
+	// Lease expired - record expiration and fall back to linearizable read
+	r.readMetrics.IncrementLeaseExpirations()
 	return r.ReadLinearizable(key, timeout)
 }
 

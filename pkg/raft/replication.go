@@ -446,8 +446,11 @@ func (r *Raft) checkAndRenewLease() {
 	// Check if we have quorum
 	quorum := calculateQuorum(voters)
 	if ackCount >= quorum {
-		// Renew the lease
+		// Renew the lease and track the extension
 		r.leaseState.Renew()
+		if r.readMetrics != nil {
+			r.readMetrics.IncrementLeaseExtensions()
+		}
 	}
 }
 
