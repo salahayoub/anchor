@@ -128,7 +128,7 @@ This repo is a fresh start for upcoming features. Planned improvements include:
 
 - Log compaction and truncation
 - Client session handling
-- Read-only queries optimization
+- Read-only queries optimization [Done]
 - Metrics and observability
 - Kubernetes integration
 
