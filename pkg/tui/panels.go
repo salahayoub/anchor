@@ -4,171 +4,230 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
-// StatusPanel renders the node status information.
+// StatusPanel shows node connectivity and roles.
 type StatusPanel struct{}
 
-// NewStatusPanel creates a new StatusPanel.
-func NewStatusPanel() *StatusPanel {
-	return &StatusPanel{}
-}
+func NewStatusPanel() *StatusPanel { return &StatusPanel{} }
 
-// Render outputs the node status panel content.
-// Displays each node's ID, role, and connection status.
-// Disconnected nodes are marked appropriately.
-func (p *StatusPanel) Render(state *ClusterState) string {
+func (p *StatusPanel) Draw(b *Buffer, x, y, w, h int, state *ClusterState, isActive bool) {
+	// Draw border
+	style := CurrentStyles.Border
+	if isActive {
+		style = CurrentStyles.BorderFocus
+	}
+	b.DrawBox(x, y, w, h, style)
+	b.DrawString(x+2, y, " Nodes ", CurrentStyles.Header)
+
 	if state == nil {
-		return "No cluster state available"
+		b.DrawString(x+2, y+2, "No state", CurrentStyles.Muted)
+		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString("=== Node Status ===\n")
-	sb.WriteString(fmt.Sprintf("Local Node: %s (%s)\n", state.LocalNodeID, state.LocalRole))
-	sb.WriteString(fmt.Sprintf("Leader: %s\n", state.LeaderID))
-	sb.WriteString("\nCluster Nodes:\n")
+	// Content area
+	contentX, contentY := x+2, y+2
 
+	// Local node info
+	b.DrawString(contentX, contentY, fmt.Sprintf("Local: %s", state.LocalNodeID), CurrentStyles.Bold)
+	roleStyle := CurrentStyles.Normal
+	if state.LocalRole == "Leader" {
+		roleStyle = CurrentStyles.Success
+	} else if state.LocalRole == "Candidate" {
+		roleStyle = CurrentStyles.Warning
+	}
+	b.DrawString(contentX, contentY+1, state.LocalRole, roleStyle)
+
+	b.DrawString(contentX, contentY+3, "Cluster Members:", CurrentStyles.Muted)
+
+	// List nodes
+	currentY := contentY + 5
 	for _, node := range state.Nodes {
-		status := "connected"
-		if !node.Connected {
-			status = "disconnected"
+		if currentY >= y+h-1 {
+			break
 		}
-		sb.WriteString(fmt.Sprintf("  %s: %s [%s]\n", node.ID, node.Role, status))
-	}
 
-	return sb.String()
+		statusStyle := CurrentStyles.Success
+		statusChar := '●'
+		if !node.Connected {
+			statusStyle = CurrentStyles.Error
+			statusChar = '○'
+		}
+
+		b.Set(contentX, currentY, statusChar, statusStyle)
+
+		nodeStyle := CurrentStyles.Normal
+		if node.ID == state.LeaderID {
+			nodeStyle = CurrentStyles.Warning // Gold for leader
+		}
+
+		nodeStr := fmt.Sprintf(" %s (%s)", node.ID, node.Role)
+		b.DrawString(contentX+1, currentY, nodeStr, nodeStyle)
+
+		currentY++
+	}
 }
 
-// MetricsPanel renders the Raft metrics information.
+// MetricsPanel displays current term and commit index.
 type MetricsPanel struct{}
 
-// NewMetricsPanel creates a new MetricsPanel.
-func NewMetricsPanel() *MetricsPanel {
-	return &MetricsPanel{}
-}
+func NewMetricsPanel() *MetricsPanel { return &MetricsPanel{} }
 
-// Render outputs the metrics panel content.
-// Displays term, commit index, and last updated timestamp.
-func (p *MetricsPanel) Render(state *ClusterState) string {
+func (p *MetricsPanel) Draw(b *Buffer, x, y, w, h int, state *ClusterState, isActive bool) {
+	style := CurrentStyles.Border
+	if isActive {
+		style = CurrentStyles.BorderFocus
+	}
+	b.DrawBox(x, y, w, h, style)
+	b.DrawString(x+2, y, " Metrics ", CurrentStyles.Header)
+
 	if state == nil {
-		return "No cluster state available"
+		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString("=== Metrics ===\n")
-	sb.WriteString(fmt.Sprintf("Current Term: %d\n", state.CurrentTerm))
-	sb.WriteString(fmt.Sprintf("Commit Index: %d\n", state.CommitIndex))
-	sb.WriteString(fmt.Sprintf("Last Updated: %s\n", state.LastUpdated.Format(time.RFC3339)))
+	// Simple key-value display
+	drawKV := func(key, value string, row int) {
+		b.DrawString(x+2, y+2+row, key, CurrentStyles.Muted)
+		b.DrawString(x+2+15, y+2+row, value, CurrentStyles.Normal)
+	}
 
-	return sb.String()
+	drawKV("Term", fmt.Sprintf("%d", state.CurrentTerm), 0)
+	drawKV("Commit Index", fmt.Sprintf("%d", state.CommitIndex), 1)
+	drawKV("Last Updates", state.LastUpdated.Format("15:04:05"), 2)
 }
 
-// ReplicationPanel renders the log replication progress.
+// ReplicationPanel tracks follower synchronization status.
 type ReplicationPanel struct{}
 
-// NewReplicationPanel creates a new ReplicationPanel.
-func NewReplicationPanel() *ReplicationPanel {
-	return &ReplicationPanel{}
-}
+func NewReplicationPanel() *ReplicationPanel { return &ReplicationPanel{} }
 
-// Render outputs the replication panel content.
-// For leaders: displays each follower's match index, highlighting lagging followers (>100 entries behind).
-// For non-leaders: displays a message indicating replication data is only available on the leader.
-func (p *ReplicationPanel) Render(state *ClusterState) string {
-	if state == nil {
-		return "No cluster state available"
+func (p *ReplicationPanel) Draw(b *Buffer, x, y, w, h int, state *ClusterState, isActive bool) {
+	style := CurrentStyles.Border
+	if isActive {
+		style = CurrentStyles.BorderFocus
 	}
+	b.DrawBox(x, y, w, h, style)
+	b.DrawString(x+2, y, " Replication ", CurrentStyles.Header)
 
-	var sb strings.Builder
-	sb.WriteString("=== Replication ===\n")
+	if state == nil {
+		return
+	}
 
 	if state.LocalRole != "Leader" {
-		sb.WriteString("Replication data is only available on the leader\n")
-		return sb.String()
+		b.DrawString(x+2, y+2, "Replication view only available on Leader", CurrentStyles.Muted)
+		return
 	}
 
-	sb.WriteString("Follower Match Indices:\n")
+	row := 0
 	for _, node := range state.Nodes {
 		if node.ID == state.LocalNodeID {
-			continue // Skip self
+			continue
 		}
 
-		lag, hasLag := state.ReplicationLag[node.ID]
-		lagIndicator := ""
-		if hasLag && lag > 100 {
-			lagIndicator = " [LAGGING]"
+		if y+2+row*3 >= y+h-1 {
+			break
 		}
 
-		sb.WriteString(fmt.Sprintf("  %s: match=%d%s\n", node.ID, node.MatchIndex, lagIndicator))
+		// Node info
+		b.DrawString(x+2, y+2+row*3, node.ID, CurrentStyles.Bold)
+		b.DrawString(x+15, y+2+row*3, fmt.Sprintf("Match: %d", node.MatchIndex), CurrentStyles.Muted)
+
+		// Visual representation of replication lag.
+		// CommitIndex is the target.
+		pct := 1.0
+		if state.CommitIndex > 0 {
+			pct = float64(node.MatchIndex) / float64(state.CommitIndex)
+		}
+		if pct > 1.0 {
+			pct = 1.0
+		}
+
+		barW := w - 4
+		b.DrawBar(x+2, y+2+row*3+1, barW, pct, CurrentStyles.Selected, CurrentStyles.Muted)
+
+		row++
 	}
-
-	return sb.String()
 }
 
-// LogsPanel renders the recent log entries.
+// LogsPanel lists the latest Raft operations.
 type LogsPanel struct{}
 
-// NewLogsPanel creates a new LogsPanel.
-func NewLogsPanel() *LogsPanel {
-	return &LogsPanel{}
-}
+func NewLogsPanel() *LogsPanel { return &LogsPanel{} }
 
-// Render outputs the logs panel content.
-// Displays up to 10 recent log entries with index, term, and operation.
-func (p *LogsPanel) Render(logs []LogEntry) string {
-	var sb strings.Builder
-	sb.WriteString("=== Recent Logs ===\n")
+func (p *LogsPanel) Draw(b *Buffer, x, y, w, h int, logs []LogEntry, isActive bool) {
+	style := CurrentStyles.Border
+	if isActive {
+		style = CurrentStyles.BorderFocus
+	}
+	b.DrawBox(x, y, w, h, style)
+	b.DrawString(x+2, y, " Logs ", CurrentStyles.Header)
 
 	if len(logs) == 0 {
-		sb.WriteString("No log entries\n")
-		return sb.String()
+		b.DrawString(x+2, y+2, "No logs", CurrentStyles.Muted)
+		return
 	}
 
-	// Display at most 10 entries
-	displayCount := len(logs)
-	if displayCount > 10 {
-		displayCount = 10
+	// Display logs
+	// Cap at available height
+	maxLines := h - 2
+	count := len(logs)
+	if count > maxLines {
+		count = maxLines
 	}
 
-	// Show the most recent entries (last N entries)
-	startIdx := len(logs) - displayCount
-	for i := startIdx; i < len(logs); i++ {
-		entry := logs[i]
-		sb.WriteString(fmt.Sprintf("  [%d] term=%d op=%s\n", entry.Index, entry.Term, entry.Operation))
-	}
+	startIdx := len(logs) - count
+	for i := 0; i < count; i++ {
+		entry := logs[startIdx+i]
+		rowY := y + 2 + i
 
-	return sb.String()
+		// Draw Index
+		idxStr := fmt.Sprintf("[%d]", entry.Index)
+		b.DrawString(x+2, rowY, idxStr, CurrentStyles.Muted)
+
+		// Draw details
+		logStr := fmt.Sprintf(" Term: %d | %s", entry.Term, entry.Operation)
+		b.DrawString(x+2+len(idxStr)+1, rowY, logStr, CurrentStyles.Normal)
+	}
 }
 
-// CommandPanel renders the command input and output area.
+// CommandPanel processes user CLI input.
 type CommandPanel struct{}
 
-// NewCommandPanel creates a new CommandPanel.
-func NewCommandPanel() *CommandPanel {
-	return &CommandPanel{}
-}
+func NewCommandPanel() *CommandPanel { return &CommandPanel{} }
 
-// Render outputs the command panel content.
-// Displays the current input, output, and any error messages.
-func (p *CommandPanel) Render(input, output, errorMsg string) string {
-	var sb strings.Builder
-	sb.WriteString("=== Command ===\n")
-	sb.WriteString(fmt.Sprintf("> %s\n", input))
+func (p *CommandPanel) Draw(b *Buffer, x, y, w, h int, input, output, errorMsg string, isActive bool) {
+	style := CurrentStyles.Border
+	if isActive {
+		style = CurrentStyles.BorderFocus
+	}
+	b.DrawBox(x, y, w, h, style)
+	b.DrawString(x+2, y, " Command ", CurrentStyles.Header)
 
+	// Input area
+	prompt := "> "
+	b.DrawString(x+2, y+2, prompt, CurrentStyles.Bold)
+	b.DrawString(x+2+len(prompt), y+2, input, CurrentStyles.Normal)
+
+	// Cursor (fake) if active
+	if isActive {
+		cursorX := x + 2 + len(prompt) + len(input)
+		if cursorX < x+w-1 {
+			b.Set(cursorX, y+2, '█', CurrentStyles.Highlight)
+		}
+	}
+
+	// Divider
+	b.DrawString(x+2, y+4, strings.Repeat("─", w-4), CurrentStyles.Muted)
+
+	// Output Area
 	if errorMsg != "" {
-		sb.WriteString(fmt.Sprintf("Error: %s\n", errorMsg))
+		b.DrawString(x+2, y+5, "Error: "+errorMsg, CurrentStyles.Error)
+	} else if output != "" {
+		b.DrawString(x+2, y+5, output, CurrentStyles.Success)
 	}
-
-	if output != "" {
-		sb.WriteString(fmt.Sprintf("Output: %s\n", output))
-	}
-
-	return sb.String()
 }
 
-// RenderNotLeaderError formats an error message for not-leader errors.
-// Includes the leader ID to help the user redirect their request.
+// RenderNotLeaderError helps format redirect messages when hitting a follower.
 func (p *CommandPanel) RenderNotLeaderError(leaderID string) string {
 	return fmt.Sprintf("Not leader. Current leader is: %s", leaderID)
 }

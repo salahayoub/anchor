@@ -1,57 +1,11 @@
-// Package tui provides view rendering for the TUI dashboard.
 package tui
 
-import "strings"
-
-// BorderStyle defines the characters used for panel borders.
-type BorderStyle struct {
-	TopLeft     string
-	TopRight    string
-	BottomLeft  string
-	BottomRight string
-	Horizontal  string
-	Vertical    string
-}
-
-// NormalBorder is the default border style for unfocused panels.
-// Uses single-line box drawing characters for a subtle appearance.
-var NormalBorder = BorderStyle{
-	TopLeft:     "┌",
-	TopRight:    "┐",
-	BottomLeft:  "└",
-	BottomRight: "┘",
-	Horizontal:  "─",
-	Vertical:    "│",
-}
-
-// FocusedBorder is the border style for focused panels.
-// Uses double-line box drawing characters to clearly indicate focus.
-var FocusedBorder = BorderStyle{
-	TopLeft:     "╔",
-	TopRight:    "╗",
-	BottomLeft:  "╚",
-	BottomRight: "╝",
-	Horizontal:  "═",
-	Vertical:    "║",
-}
-
-// BorderColor represents the color for panel borders.
-type BorderColor string
-
-const (
-	// BorderColorNone indicates no color (default terminal color).
-	BorderColorNone BorderColor = ""
-	// BorderColorCyan is used for focused panel borders.
-	BorderColorCyan BorderColor = "cyan"
+import (
+	"fmt"
+	"strings"
 )
 
-// PanelBorderInfo contains both the border style and color for a panel.
-type PanelBorderInfo struct {
-	Style BorderStyle
-	Color BorderColor
-}
-
-// View handles rendering the model to the terminal.
+// View manages the TUI layout and rendering.
 type View struct {
 	statusPanel      *StatusPanel
 	metricsPanel     *MetricsPanel
@@ -71,231 +25,265 @@ func NewView() *View {
 	}
 }
 
-// RenderPanelWithBorder wraps panel content with a border.
-// The border style depends on whether the panel has focus.
-func RenderPanelWithBorder(content string, title string, focused bool) string {
-	border := NormalBorder
-	if focused {
-		border = FocusedBorder
+// Render draws the entire application to the buffer.
+func (v *View) Render(b *Buffer, model *Model) {
+	width, height := b.Width, b.Height
+
+	// Draw Background
+	b.FillRect(0, 0, width, height, ' ', CurrentStyles.Normal)
+
+	// Layout Constants
+	headerHeight := 3
+	footerHeight := 3
+	mainHeight := height - headerHeight - footerHeight
+
+	if mainHeight < 0 {
+		mainHeight = 0
 	}
 
-	lines := strings.Split(content, "\n")
+	// Header
+	v.drawHeader(b, 0, 0, width, headerHeight, model)
 
-	// Find the maximum line width
-	maxWidth := len(title) + 4 // Minimum width to fit title
-	for _, line := range lines {
-		if len(line) > maxWidth {
-			maxWidth = len(line)
-		}
+	// Main Content Area
+	// Sidebar / Content split
+	sidebarWidth := width / 4
+	if sidebarWidth < 25 {
+		sidebarWidth = 25
+	}
+	if sidebarWidth > width {
+		sidebarWidth = width
+	}
+	contentWidth := width - sidebarWidth
+
+	mainY := headerHeight
+
+	// Sidebar: Status Panel typically
+	v.statusPanel.Draw(b, 0, mainY, sidebarWidth, mainHeight, model.ClusterState, model.ActivePanel == PanelStatus)
+
+	// Content Area
+	contentX := sidebarWidth
+
+	topRowHeight := mainHeight / 3
+	midRowHeight := mainHeight - topRowHeight - 4 // 4 for command panel
+	commandHeight := 4
+
+	if topRowHeight < 5 {
+		topRowHeight = 5
+	}
+	if commandHeight < 3 {
+		commandHeight = 3
 	}
 
-	// Add padding
-	maxWidth += 2
-
-	var sb strings.Builder
-
-	// Top border with title
-	sb.WriteString(border.TopLeft)
-	titlePadding := (maxWidth - len(title) - 2) / 2
-	sb.WriteString(strings.Repeat(border.Horizontal, titlePadding))
-	sb.WriteString(" ")
-	sb.WriteString(title)
-	sb.WriteString(" ")
-	remainingPadding := maxWidth - titlePadding - len(title) - 2
-	sb.WriteString(strings.Repeat(border.Horizontal, remainingPadding))
-	sb.WriteString(border.TopRight)
-	sb.WriteString("\n")
-
-	// Content lines
-	for _, line := range lines {
-		sb.WriteString(border.Vertical)
-		sb.WriteString(" ")
-		sb.WriteString(line)
-		padding := maxWidth - len(line) - 1
-		if padding > 0 {
-			sb.WriteString(strings.Repeat(" ", padding))
-		}
-		sb.WriteString(border.Vertical)
-		sb.WriteString("\n")
+	// Re-adjust if height is small
+	remaining := mainHeight - commandHeight
+	if remaining < 10 {
+		topRowHeight = remaining / 2
+		midRowHeight = remaining - topRowHeight
 	}
 
-	// Bottom border
-	sb.WriteString(border.BottomLeft)
-	sb.WriteString(strings.Repeat(border.Horizontal, maxWidth))
-	sb.WriteString(border.BottomRight)
-	sb.WriteString("\n")
+	// Metrics & Replication
+	metricsWidth := contentWidth / 2
+	replWidth := contentWidth - metricsWidth
 
-	return sb.String()
+	v.metricsPanel.Draw(b, contentX, mainY, metricsWidth, topRowHeight, model.ClusterState, model.ActivePanel == PanelMetrics)
+	v.replicationPanel.Draw(b, contentX+metricsWidth, mainY, replWidth, topRowHeight, model.ClusterState, model.ActivePanel == PanelReplication)
+
+	// Logs
+	v.logsPanel.Draw(b, contentX, mainY+topRowHeight, contentWidth, midRowHeight, model.RecentLogs, model.ActivePanel == PanelLogs)
+
+	// Command
+	v.commandPanel.Draw(b, contentX, mainY+topRowHeight+midRowHeight, contentWidth, commandHeight, model.CommandInput, model.CommandOutput, model.ErrorMessage, model.ActivePanel == PanelCommand)
+
+	// Footer
+	v.drawFooter(b, 0, height-footerHeight, width, footerHeight, model)
 }
 
-// RenderPanel renders a single panel with its content and border.
-// The panel is highlighted if it has focus.
-func (v *View) RenderPanel(panelType PanelType, model *Model) string {
-	var content string
-	var title string
+func (v *View) drawHeader(b *Buffer, x, y, w, h int, model *Model) {
+	b.FillRect(x, y, w, h, ' ', CurrentStyles.Normal)
 
-	switch panelType {
-	case PanelStatus:
-		title = "Status"
-		content = v.statusPanel.Render(model.ClusterState)
-	case PanelMetrics:
-		title = "Metrics"
-		content = v.metricsPanel.Render(model.ClusterState)
-	case PanelReplication:
-		title = "Replication"
-		content = v.replicationPanel.Render(model.ClusterState)
-	case PanelLogs:
-		title = "Logs"
-		content = v.logsPanel.Render(model.RecentLogs)
-	case PanelCommand:
-		title = "Command"
-		content = v.commandPanel.Render(model.CommandInput, model.CommandOutput, model.ErrorMessage)
-	default:
-		title = "Unknown"
-		content = "Unknown panel type"
-	}
+	title := " ANCHOR "
+	b.DrawString(x, y, title, CurrentStyles.Header)
 
-	focused := model.ActivePanel == panelType
-	return RenderPanelWithBorder(content, title, focused)
-}
+	sub := " Distributed Raft Key-Value Store "
+	b.DrawString(x+len(title), y, sub, CurrentStyles.Muted)
 
-// Render draws the current model state to the terminal.
-// Returns a string representation of all panels with proper focus highlighting.
-func (v *View) Render(model *Model) string {
-	var sb strings.Builder
-
-	// Render connection status if disconnected
+	// Connection Status top right
+	status := "CONNECTED"
+	style := CurrentStyles.Success
 	if !model.Connected {
-		sb.WriteString(v.RenderConnectionStatus(model))
-		sb.WriteString("\n")
+		status = "DISCONNECTED"
+		style = CurrentStyles.Error
+		if model.ReconnectAttempts > 0 {
+			status += fmt.Sprintf(" (Retry %d)", model.ReconnectAttempts)
+		}
 	}
+	b.DrawStringAligned(x, y, w, status, style, 2)
 
-	// Render all panels in order
-	panels := []PanelType{PanelStatus, PanelMetrics, PanelReplication, PanelLogs, PanelCommand}
-	for _, panel := range panels {
-		sb.WriteString(v.RenderPanel(panel, model))
-		sb.WriteString("\n")
-	}
-
-	return sb.String()
+	// Separator
+	b.DrawString(x, y+1, strings.Repeat("═", w), CurrentStyles.Border)
 }
 
-// RenderConnectionStatus renders the connection status indicator.
-// Shows reconnection attempt count when disconnected.
-func (v *View) RenderConnectionStatus(model *Model) string {
-	if model.Connected {
-		return ""
+func (v *View) drawFooter(b *Buffer, x, y, w, h int, model *Model) {
+	b.DrawString(x, y, strings.Repeat("─", w), CurrentStyles.Border)
+
+	help := fmt.Sprintf(" [Tab] Next | [S-Tab] Prev | [Enter] Exec | Panel: %s ", model.ActivePanel)
+	b.DrawStringAligned(x, y+1, w, help, CurrentStyles.Muted, 1) // Centered
+}
+
+// RenderMultiNode draws the multi-node application to the buffer.
+func (v *View) RenderMultiNode(b *Buffer, model *MultiNodeModel) {
+	width, height := b.Width, b.Height
+
+	// Draw Background
+	b.FillRect(0, 0, width, height, ' ', CurrentStyles.Normal)
+
+	// Layout Constants
+	headerHeight := 3
+	footerHeight := 3
+	mainHeight := height - headerHeight - footerHeight
+
+	if mainHeight < 0 {
+		mainHeight = 0
 	}
 
-	var sb strings.Builder
-	sb.WriteString("*** DISCONNECTED ***\n")
-	if model.ReconnectAttempts > 0 {
-		sb.WriteString("Reconnection attempts: ")
-		sb.WriteString(strings.Repeat(".", model.ReconnectAttempts))
-		sb.WriteString(" (")
-		// Convert int to string manually to avoid fmt import
-		attempts := model.ReconnectAttempts
-		if attempts == 0 {
-			sb.WriteString("0")
-		} else {
-			digits := []byte{}
-			for attempts > 0 {
-				digits = append([]byte{byte('0' + attempts%10)}, digits...)
-				attempts /= 10
+	// Header
+	v.drawHeaderMultiNode(b, 0, 0, width, headerHeight, model)
+
+	// Main Content Area
+	sidebarWidth := width / 4
+	if sidebarWidth < 25 {
+		sidebarWidth = 25
+	}
+	if sidebarWidth > width {
+		sidebarWidth = width
+	}
+	contentWidth := width - sidebarWidth
+
+	mainY := headerHeight
+
+	// Sidebar: MultiNode status panel
+	v.drawMultiNodeSidebar(b, 0, mainY, sidebarWidth, mainHeight, model)
+
+	// Content Area
+	contentX := sidebarWidth
+
+	topRowHeight := mainHeight / 3
+	midRowHeight := mainHeight - topRowHeight - 4
+	commandHeight := 4
+
+	if topRowHeight < 5 {
+		topRowHeight = 5
+	}
+	if commandHeight < 3 {
+		commandHeight = 3
+	}
+
+	remaining := mainHeight - commandHeight
+	if remaining < 10 {
+		topRowHeight = remaining / 2
+		midRowHeight = remaining - topRowHeight
+	}
+
+	// Metrics & Replication
+	metricsWidth := contentWidth / 2
+	replWidth := contentWidth - metricsWidth
+
+	// Use embedded model for active node state
+	activeModel := model.Model
+
+	v.metricsPanel.Draw(b, contentX, mainY, metricsWidth, topRowHeight, activeModel.ClusterState, activeModel.ActivePanel == PanelMetrics)
+	v.replicationPanel.Draw(b, contentX+metricsWidth, mainY, replWidth, topRowHeight, activeModel.ClusterState, activeModel.ActivePanel == PanelReplication)
+
+	// Logs
+	v.logsPanel.Draw(b, contentX, mainY+topRowHeight, contentWidth, midRowHeight, activeModel.RecentLogs, activeModel.ActivePanel == PanelLogs)
+
+	// Command
+	v.commandPanel.Draw(b, contentX, mainY+topRowHeight+midRowHeight, contentWidth, commandHeight, activeModel.CommandInput, activeModel.CommandOutput, activeModel.ErrorMessage, activeModel.ActivePanel == PanelCommand)
+
+	// Footer
+	v.drawFooter(b, 0, height-footerHeight, width, footerHeight, model.Model)
+}
+
+func (v *View) drawHeaderMultiNode(b *Buffer, x, y, w, h int, model *MultiNodeModel) {
+	b.FillRect(x, y, w, h, ' ', CurrentStyles.Normal)
+
+	title := " ANCHOR CLUSTER "
+	b.DrawString(x, y, title, CurrentStyles.Header)
+
+	nodeInfo := fmt.Sprintf(" Node %d/%d (%s) ", model.GetActiveNodeNumber(), model.TotalNodes, model.ActiveNodeID)
+	b.DrawString(x+len(title), y, nodeInfo, CurrentStyles.Bold)
+
+	leaderInfo := fmt.Sprintf(" Leader: %s (Term: %d) ", model.ClusterLeaderID, model.ClusterTerm)
+	b.DrawString(x+len(title)+len(nodeInfo), y, leaderInfo, CurrentStyles.Muted)
+
+	// Separator
+	b.DrawString(x, y+1, strings.Repeat("═", w), CurrentStyles.Border)
+}
+
+func (v *View) drawMultiNodeSidebar(b *Buffer, x, y, w, h int, model *MultiNodeModel) {
+	// Multi-node sidebar with interactive node list
+	style := CurrentStyles.Border
+	if model.ActivePanel == PanelStatus {
+		style = CurrentStyles.BorderFocus
+	}
+	b.DrawBox(x, y, w, h, style)
+	b.DrawString(x+2, y, " Cluster Nodes ", CurrentStyles.Header)
+
+	contentX, contentY := x+2, y+2
+
+	// Instructions
+	b.DrawString(contentX, contentY, "[1-9] Switch Node", CurrentStyles.Muted)
+
+	currentY := contentY + 2
+	for i := 1; i <= model.TotalNodes; i++ {
+		nodeID := fmt.Sprintf("node%d", i)
+		if currentY >= y+h-1 {
+			break
+		}
+
+		isActive := nodeID == model.ActiveNodeID
+
+		// Status dot
+		health := model.GetNodeHealth(nodeID)
+		connected := health != nil && health.Connected
+
+		statusStyle := CurrentStyles.Success
+		statusChar := '●'
+		if !connected {
+			statusStyle = CurrentStyles.Error
+			statusChar = '○'
+		}
+
+		b.Set(contentX, currentY, statusChar, statusStyle)
+
+		// Node Name
+		nameStyle := CurrentStyles.Normal
+		if isActive {
+			nameStyle = CurrentStyles.Selected
+		}
+
+		// Check role if known
+		role := "?"
+		state := model.NodeStates[nodeID]
+		if state != nil {
+			role = state.LocalRole
+			if role == "Leader" {
+				nameStyle = CurrentStyles.Warning
+				if isActive {
+					nameStyle = CurrentStyles.Selected
+				}
 			}
-			sb.Write(digits)
 		}
-		sb.WriteString(")")
-	}
-	return sb.String()
-}
 
-// IsPanelFocused returns true if the given panel type has focus in the model.
-func (v *View) IsPanelFocused(panelType PanelType, model *Model) bool {
-	return model.ActivePanel == panelType
-}
-
-// GetBorderStyleForPanel returns the appropriate border style for a panel.
-// Returns FocusedBorder if the panel has focus, NormalBorder otherwise.
-func (v *View) GetBorderStyleForPanel(panelType PanelType, model *Model) BorderStyle {
-	if v.IsPanelFocused(panelType, model) {
-		return FocusedBorder
-	}
-	return NormalBorder
-}
-
-// GetBorderInfoForPanel returns the border style and color for a panel.
-// Focused panels use double-line borders (╔═╗║╚╝) with cyan color when colorSupport is true.
-// Unfocused panels use single-line borders (┌─┐│└┘) with no color.
-func GetBorderInfoForPanel(focused bool, colorSupport bool) PanelBorderInfo {
-	if focused {
-		color := BorderColorNone
-		if colorSupport {
-			color = BorderColorCyan
+		line := fmt.Sprintf(" %s (%s)", nodeID, role)
+		if isActive {
+			// Fill line width for selection
+			padded := fmt.Sprintf("%-*s", w-5, line)
+			b.DrawString(contentX+1, currentY, padded, nameStyle)
+		} else {
+			b.DrawString(contentX+1, currentY, line, nameStyle)
 		}
-		return PanelBorderInfo{
-			Style: FocusedBorder,
-			Color: color,
-		}
+
+		currentY++
 	}
-	return PanelBorderInfo{
-		Style: NormalBorder,
-		Color: BorderColorNone,
-	}
-}
-
-// RenderPanelWithBorderAndColor wraps panel content with a border and returns color info.
-// The border style depends on whether the panel has focus.
-// When focused and colorSupport is true, the border should be rendered in cyan.
-func RenderPanelWithBorderAndColor(content string, title string, focused bool, colorSupport bool) (string, BorderColor) {
-	info := GetBorderInfoForPanel(focused, colorSupport)
-	border := info.Style
-
-	lines := strings.Split(content, "\n")
-
-	// Find the maximum line width
-	maxWidth := len(title) + 4 // Minimum width to fit title
-	for _, line := range lines {
-		if len(line) > maxWidth {
-			maxWidth = len(line)
-		}
-	}
-
-	// Add padding
-	maxWidth += 2
-
-	var sb strings.Builder
-
-	// Top border with title
-	sb.WriteString(border.TopLeft)
-	titlePadding := (maxWidth - len(title) - 2) / 2
-	sb.WriteString(strings.Repeat(border.Horizontal, titlePadding))
-	sb.WriteString(" ")
-	sb.WriteString(title)
-	sb.WriteString(" ")
-	remainingPadding := maxWidth - titlePadding - len(title) - 2
-	sb.WriteString(strings.Repeat(border.Horizontal, remainingPadding))
-	sb.WriteString(border.TopRight)
-	sb.WriteString("\n")
-
-	// Content lines
-	for _, line := range lines {
-		sb.WriteString(border.Vertical)
-		sb.WriteString(" ")
-		sb.WriteString(line)
-		padding := maxWidth - len(line) - 1
-		if padding > 0 {
-			sb.WriteString(strings.Repeat(" ", padding))
-		}
-		sb.WriteString(border.Vertical)
-		sb.WriteString("\n")
-	}
-
-	// Bottom border
-	sb.WriteString(border.BottomLeft)
-	sb.WriteString(strings.Repeat(border.Horizontal, maxWidth))
-	sb.WriteString(border.BottomRight)
-	sb.WriteString("\n")
-
-	return sb.String(), info.Color
 }

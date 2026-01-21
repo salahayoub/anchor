@@ -3,10 +3,89 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// ... existing mocks ...
+
+// TestTUIRenderProducesOutput tests that TUI render produces non-empty output.
+func TestTUIRenderProducesOutput(t *testing.T) {
+	fetcher := newIntegrationMockFetcher()
+	app := NewApp(fetcher)
+
+	// Trigger refresh to populate state
+	app.refresh()
+
+	// Render the view
+	buf := NewBuffer(100, 30)
+	app.view.Render(buf, app.model)
+	output := bufferToString(buf)
+
+	if strings.TrimSpace(output) == "" {
+		t.Error("Expected render to produce non-empty output")
+	}
+
+	// Verify output contains key information
+	if !containsString(output, "node1") {
+		t.Error("Expected output to contain node ID 'node1'")
+	}
+
+	if !containsString(output, "Leader") {
+		t.Error("Expected output to contain role 'Leader'")
+	}
+
+	if !containsString(output, "Term") {
+		t.Error("Expected output to contain 'Term'")
+	}
+}
+
+// TestTUIModelViewSeparation tests that model and view are properly separated.
+func TestTUIModelViewSeparation(t *testing.T) {
+	fetcher := newIntegrationMockFetcher()
+	app := NewApp(fetcher)
+
+	// Get model and view
+	model := app.GetModel()
+	view := app.view
+
+	// Verify model can be modified independently
+	model.ActivePanel = PanelMetrics
+	model.CommandInput = "test input"
+
+	// Verify view can render the modified model
+	buf := NewBuffer(100, 30)
+	view.Render(buf, model)
+	output := bufferToString(buf)
+
+	if strings.TrimSpace(output) == "" {
+		t.Error("Expected view to render modified model")
+	}
+
+	// Verify model changes don't affect view structure
+	model.ActivePanel = PanelCommand
+	buf2 := NewBuffer(100, 30)
+	view.Render(buf2, model)
+	output2 := bufferToString(buf2)
+
+	if strings.TrimSpace(output2) == "" {
+		t.Error("Expected view to render model with different panel")
+	}
+}
+
+// bufferToString converts buffer content to string for testing.
+func bufferToString(b *Buffer) string {
+	var sb strings.Builder
+	for y := 0; y < b.Height; y++ {
+		for x := 0; x < b.Width; x++ {
+			sb.WriteRune(b.Cells[y][x].Rune)
+		}
+		sb.WriteRune('\n')
+	}
+	return sb.String()
+}
 
 // integrationMockFetcher is a mock implementation of DataFetcher for integration testing.
 type integrationMockFetcher struct {
@@ -263,60 +342,6 @@ func TestTUIDisplaysRecentLogs(t *testing.T) {
 }
 
 // TestTUIRenderProducesOutput tests that TUI render produces non-empty output.
-func TestTUIRenderProducesOutput(t *testing.T) {
-	fetcher := newIntegrationMockFetcher()
-	app := NewApp(fetcher)
-
-	// Trigger refresh to populate state
-	app.refresh()
-
-	// Render the view
-	output := app.view.Render(app.model)
-
-	if output == "" {
-		t.Error("Expected render to produce non-empty output")
-	}
-
-	// Verify output contains key information
-	if !containsString(output, "node1") {
-		t.Error("Expected output to contain node ID 'node1'")
-	}
-
-	if !containsString(output, "Leader") {
-		t.Error("Expected output to contain role 'Leader'")
-	}
-
-	if !containsString(output, "Term") {
-		t.Error("Expected output to contain 'Term'")
-	}
-}
-
-// TestTUIModelViewSeparation tests that model and view are properly separated.
-func TestTUIModelViewSeparation(t *testing.T) {
-	fetcher := newIntegrationMockFetcher()
-	app := NewApp(fetcher)
-
-	// Get model and view
-	model := app.GetModel()
-	view := app.view
-
-	// Verify model can be modified independently
-	model.ActivePanel = PanelMetrics
-	model.CommandInput = "test input"
-
-	// Verify view can render the modified model
-	output := view.Render(model)
-	if output == "" {
-		t.Error("Expected view to render modified model")
-	}
-
-	// Verify model changes don't affect view structure
-	model.ActivePanel = PanelCommand
-	output2 := view.Render(model)
-	if output2 == "" {
-		t.Error("Expected view to render model with different panel")
-	}
-}
 
 // TestTUIFetcherInterface tests that the fetcher interface is properly mockable.
 func TestTUIFetcherInterface(t *testing.T) {

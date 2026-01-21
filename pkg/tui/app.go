@@ -1,4 +1,4 @@
-// Package tui provides the main application controller for the TUI dashboard.
+// Package tui implements the terminal user interface.
 package tui
 
 import (
@@ -58,9 +58,7 @@ func NewApp(fetcher DataFetcher) *App {
 	}
 }
 
-// Run starts the TUI application main loop.
-// It initializes the terminal, starts event handling, and runs the refresh loop.
-// Returns an error if initialization fails or if an unrecoverable error occurs.
+// Run enters the main event loop.
 func (a *App) Run() error {
 	// Initialize screen
 	screen, err := tcell.NewScreen()
@@ -79,7 +77,7 @@ func (a *App) Run() error {
 	a.screen = screen
 	a.screen.Clear()
 
-	// Set up signal handling for graceful shutdown
+	// Catch signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -294,26 +292,16 @@ func (a *App) refreshLocked() {
 
 // render draws the current state to the screen.
 func (a *App) render() {
+	width, height := a.screen.Size()
+	buffer := NewBuffer(width, height)
+
 	a.mu.RLock()
-	output := a.view.Render(a.model)
+	a.view.Render(buffer, a.model)
 	a.mu.RUnlock()
 
 	a.screen.Clear()
+	buffer.ApplyToScreen(a.screen, 0, 0)
 
-	// Draw the output to the screen
-	row := 0
-	col := 0
-	for _, r := range output {
-		if r == '\n' {
-			row++
-			col = 0
-			continue
-		}
-		a.screen.SetContent(col, row, r, nil, tcell.StyleDefault)
-		col++
-	}
-
-	a.screen.Show()
 }
 
 // IsRunning returns whether the application is currently running.
@@ -330,8 +318,7 @@ func (a *App) GetModel() *Model {
 	return a.model
 }
 
-// handleKeyEvent processes a keyboard event and updates the model.
-// Returns true if the application should exit.
+// handleKeyEvent updates the model based on key presses.
 // Includes debouncing to handle Windows keyboard repeat issues where
 // holding a key generates rapid duplicate events.
 func (a *App) handleKeyEvent(event KeyEvent) bool {
@@ -542,12 +529,10 @@ func indexAfter(s, substr string) int {
 	return idx + len(substr)
 }
 
-// MultiNodeApp is the TUI application controller for multi-node cluster management.
-// It extends the basic App with support for multiple nodes, node switching,
-// and command auto-routing.
+// MultiNodeApp extends App to handle cluster-wide logic.
 type MultiNodeApp struct {
 	multiModel    *MultiNodeModel
-	enhancedView  *EnhancedView
+	view          *View
 	fetcherPool   *FetcherPool
 	commandRouter *CommandRouter
 	screen        tcell.Screen
@@ -579,7 +564,7 @@ func NewMultiNodeApp(nodeCount int, fetcherPool *FetcherPool) *MultiNodeApp {
 	multiModel := NewMultiNodeModel(nodeCount)
 	return &MultiNodeApp{
 		multiModel:        multiModel,
-		enhancedView:      NewEnhancedView(),
+		view:              NewView(),
 		fetcherPool:       fetcherPool,
 		commandRouter:     NewCommandRouter(fetcherPool, multiModel),
 		stopChan:          make(chan struct{}),
@@ -591,7 +576,7 @@ func NewMultiNodeApp(nodeCount int, fetcherPool *FetcherPool) *MultiNodeApp {
 	}
 }
 
-// Run starts the multi-node TUI application main loop.
+// Run starts the multi-node UI.
 func (a *MultiNodeApp) Run() error {
 	// Initialize screen
 	screen, err := tcell.NewScreen()
@@ -772,24 +757,18 @@ func (a *MultiNodeApp) refreshAllNodes() {
 
 // render draws the current state to the screen.
 func (a *MultiNodeApp) render() {
+	width, height := a.screen.Size()
+	buffer := NewBuffer(width, height)
+
 	a.mu.RLock()
-	output := a.enhancedView.RenderMultiNodeView(a.multiModel, a.terminalWidth)
+	a.view.RenderMultiNode(buffer, a.multiModel)
 	a.mu.RUnlock()
 
 	a.screen.Clear()
+	buffer.ApplyToScreen(a.screen, 0, 0)
 
 	// Draw the output to the screen
-	row := 0
-	col := 0
-	for _, r := range output {
-		if r == '\n' {
-			row++
-			col = 0
-			continue
-		}
-		a.screen.SetContent(col, row, r, nil, tcell.StyleDefault)
-		col++
-	}
+	a.screen.Show()
 
 	a.screen.Show()
 }

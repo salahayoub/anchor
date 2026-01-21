@@ -1,5 +1,4 @@
-// Package tui provides the terminal interface for monitoring and managing
-// anchor's distributed key-value store cluster.
+// Package tui implements the terminal interface for the Anchor cluster.
 package tui
 
 import (
@@ -8,7 +7,7 @@ import (
 	"time"
 )
 
-// NodeHealth tracks health status for a node.
+// NodeHealth tracks connection stats.
 type NodeHealth struct {
 	Connected      bool
 	LastResponse   time.Time
@@ -24,7 +23,7 @@ type ElectionEvent struct {
 	Timestamp time.Time
 }
 
-// MultiNodeModel extends Model for multi-node cluster management.
+// MultiNodeModel manages cluster state.
 type MultiNodeModel struct {
 	*Model
 
@@ -62,7 +61,7 @@ func NewMultiNodeModel(nodeCount int) *MultiNodeModel {
 		UnicodeSupport: true,
 	}
 
-	// Initialize node IDs and health
+	// Setup nodes
 	for i := 1; i <= nodeCount; i++ {
 		nodeID := fmt.Sprintf("node%d", i)
 		m.NodeHealth[nodeID] = &NodeHealth{
@@ -104,8 +103,7 @@ func (m *MultiNodeModel) SetActiveNodeByNumber(num int) bool {
 	return m.SetActiveNode(nodeID)
 }
 
-// GetActiveNodeState returns the state of the currently active node.
-// Returns nil if no state is available for the active node.
+// GetActiveNodeState retrieves current node config.
 func (m *MultiNodeModel) GetActiveNodeState() *ClusterState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
