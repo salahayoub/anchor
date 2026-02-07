@@ -45,7 +45,6 @@ func TestApply_UnknownOperation(t *testing.T) {
 		name string
 		op   string
 	}{
-		{"delete operation", "delete"},
 		{"get operation", "get"},
 		{"empty operation", ""},
 		{"random operation", "foobar"},
@@ -160,5 +159,98 @@ func TestSnapshotRestoreIntegration(t *testing.T) {
 	}
 	if val != "1" {
 		t.Errorf("After Restore: Get(\"A\") = %q, want \"1\"", val)
+	}
+}
+
+// TestApply_Delete verifies that delete operation removes keys.
+func TestApply_Delete(t *testing.T) {
+	store := NewKVStore()
+
+	// Set a key first
+	setCmd := Command{Op: "set", Key: "mykey", Value: "myvalue"}
+	setCmdBytes, _ := json.Marshal(setCmd)
+	store.Apply(setCmdBytes)
+
+	// Verify key exists
+	val, ok := store.Get("mykey")
+	if !ok || val != "myvalue" {
+		t.Fatalf("Setup failed: Get(\"mykey\") = (%q, %v), want (\"myvalue\", true)", val, ok)
+	}
+
+	// Delete the key
+	delCmd := Command{Op: "delete", Key: "mykey"}
+	delCmdBytes, _ := json.Marshal(delCmd)
+	result := store.Apply(delCmdBytes)
+	if result != nil {
+		t.Errorf("Apply delete returned %v, want nil", result)
+	}
+
+	// Verify key is gone
+	_, ok = store.Get("mykey")
+	if ok {
+		t.Error("Key still exists after delete")
+	}
+
+	// Deleting non-existent key should be a no-op
+	result = store.Apply(delCmdBytes)
+	if result != nil {
+		t.Errorf("Apply delete on non-existent key returned %v, want nil", result)
+	}
+}
+
+// TestSize verifies that Size returns the correct count.
+func TestSize(t *testing.T) {
+	store := NewKVStore()
+
+	if got := store.Size(); got != 0 {
+		t.Errorf("Empty store Size() = %d, want 0", got)
+	}
+
+	// Add keys
+	for i, key := range []string{"a", "b", "c"} {
+		cmd := Command{Op: "set", Key: key, Value: "val"}
+		cmdBytes, _ := json.Marshal(cmd)
+		store.Apply(cmdBytes)
+
+		if got := store.Size(); got != i+1 {
+			t.Errorf("After adding %d keys, Size() = %d, want %d", i+1, got, i+1)
+		}
+	}
+
+	// Delete one
+	delCmd := Command{Op: "delete", Key: "b"}
+	delCmdBytes, _ := json.Marshal(delCmd)
+	store.Apply(delCmdBytes)
+
+	if got := store.Size(); got != 2 {
+		t.Errorf("After delete, Size() = %d, want 2", got)
+	}
+}
+
+// TestKeys verifies that Keys returns all keys.
+func TestKeys(t *testing.T) {
+	store := NewKVStore()
+
+	if keys := store.Keys(); len(keys) != 0 {
+		t.Errorf("Empty store Keys() = %v, want empty slice", keys)
+	}
+
+	// Add keys
+	expected := map[string]bool{"alpha": true, "beta": true, "gamma": true}
+	for key := range expected {
+		cmd := Command{Op: "set", Key: key, Value: "val"}
+		cmdBytes, _ := json.Marshal(cmd)
+		store.Apply(cmdBytes)
+	}
+
+	keys := store.Keys()
+	if len(keys) != 3 {
+		t.Errorf("Keys() returned %d keys, want 3", len(keys))
+	}
+
+	for _, k := range keys {
+		if !expected[k] {
+			t.Errorf("Unexpected key %q in Keys() result", k)
+		}
 	}
 }

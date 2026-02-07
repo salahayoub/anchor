@@ -84,10 +84,32 @@ func (kv *KVStore) Apply(logBytes []byte) interface{} {
 	switch cmd.Op {
 	case "set":
 		kv.data[cmd.Key] = cmd.Value
+	case "delete":
+		delete(kv.data, cmd.Key)
 	}
 	// Unknown operations are ignored and return nil
 
 	return nil
+}
+
+// Size returns the number of keys in the store.
+func (kv *KVStore) Size() int {
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+	return len(kv.data)
+}
+
+// Keys returns a slice of all keys in the store.
+// The order of keys is not guaranteed.
+func (kv *KVStore) Keys() []string {
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+
+	keys := make([]string, 0, len(kv.data))
+	for k := range kv.data {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // Get retrieves a value by key from the store.
